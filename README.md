@@ -5,6 +5,8 @@
 
 > 名字来源：干活的牛马自己给自己写工具。**不装任何 pip 包**，纯标准库跑通全链路。
 
+**仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
+
 ---
 
 ## 一、这个 Skill 包含什么
@@ -40,7 +42,16 @@
 
 ### 1. WorkBuddy / Claude Code / Claude.ai（标准 Agent Skills）
 
-把整个 `选股分析牛马工具/` 文件夹放到 skills 目录：
+**第一步 · 拿到文件**（二选一）：
+
+```bash
+# 方式 A：git clone
+git clone https://github.com/Y5H1ggs/niuma-stock-screener.git
+```
+
+方式 B：仓库页 → 绿色 `Code` 按钮 → `Download ZIP`。
+
+**第二步 · 把整个 `选股分析牛马工具/` 文件夹**放到 skills 目录：
 
 ```bash
 # 个人级（本机所有项目可用）
