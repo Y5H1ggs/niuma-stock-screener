@@ -1,0 +1,25 @@
+{
+  "_readme": "把本文件复制为 config.json 并填写。config.json 不会被提交到版本库（见 .gitignore）。所有字段都是你自己的参数，脚本里没有任何预设值。",
+
+  "cash": 100000,
+  "allowed_prefixes": ["60", "000", "001", "002", "003"],
+  "max_price": null,
+  "exclude_st": true,
+  "fee_rate_roundtrip": 0.0018,
+  "stop_loss_pct": -4.0,
+  "take_profit_pct": 2.0,
+  "position_mode": "single",
+  "min_avg_amount_yi": 0.5,
+
+  "_字段说明": {
+    "cash": "必填。可用资金（元）。用于计算可买股数 / 资金占用 / 单次费用。",
+    "allowed_prefixes": "你有交易权限的市场前缀。沪深主板 = 60/000/001/002/003；无创业板科创板权限就不要加 300/301/302/688/689。北交所 8/4 开头也不含在内。",
+    "max_price": "单票价格上限（元），null = 不限。资金少时建议设 10~15，避免买不了整手。",
+    "exclude_st": "是否剔除 ST / *ST / 退市整理股。",
+    "fee_rate_roundtrip": "双边综合费用率（买入+卖出）。默认 0.0018 ≈ 0.18%（万2.5佣金+千1印花税+过户费）。有 5 元最低佣金的，小资金建议上调到 0.002~0.003。",
+    "stop_loss_pct": "止损纪律（负值，%）。超短模式的生死线，回测/报告会引用这个数字做纪律提醒。",
+    "take_profit_pct": "兑现目标（%）。",
+    "position_mode": "仓位模式：single = 全仓单吊一只；equal = 等权分散（本工具默认按 single 口径输出股数）。",
+    "min_avg_amount_yi": "最小日均成交额（亿元），用于过滤流动性太差的标的。"
+  }
+}

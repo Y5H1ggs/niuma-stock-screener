@@ -11,11 +11,13 @@
 
 | 文件 | 内容 |
 |---|---|
-| `SKILL.md` | **主入口**：硬约束、执行流程、三口径切换、竞价校准、输出格式 |
+| `SKILL.md` | **主入口**：基础数据录入、硬约束、执行流程、三口径切换、竞价校准、输出格式 |
+| `config.example.json` | **个人参数模板**（资金 / 交易权限 / 费用率 / 止损纪律）——复制为 `config.json` 后填写 |
 | `references/datasources.md` | 全部数据源接口 URL + 字段索引 + 限流降级链 |
 | `references/playbook.md` | **判读铁律**：板块资金接力、情绪温度、相对强度、托单消耗、封单强度、竞价、资金强度分级 |
 | `references/backtest.md` | T+1 形态回测方法论（口径 / 必经输出 / 分档切分） |
-| `references/pitfalls.md` | 14 条真实踩坑记录（编码 / 字段 / 累加错误 / 代码猜测…） |
+| `references/pitfalls.md` | 21 条真实踩坑记录（编码 / 字段 / 累加错误 / 代码猜测 / 视觉重叠…） |
+| `scripts/cfg.py` | **个人参数配置加载 + 首次录入闸门**（不含任何预设个人数据） |
 | `scripts/ds.py` | **便携数据源库**（纯标准库，零依赖） |
 | `scripts/scan_pool.py` | 全市场候选池扫描（强势 / 趋势 / 潜力 三种口径） |
 | `scripts/sector_compare.py` | 板块内横向对比（铁律 1 + 相对强度，含属性桶过滤） |
@@ -86,7 +88,11 @@ alwaysApply: true
 ```bash
 cd scripts
 
-# 0) 自检：确认数据源连通
+# 0) 【首次必做】基础数据录入：把 config.example.json 复制为 config.json，填上
+#    你的资金 / 交易权限 / 费用率 / 止损纪律。填完先自检：
+python cfg.py
+
+# 0.5) 自检：确认数据源连通
 python ds.py
 
 # 1) 情绪温度（今天该不该做接力）
@@ -113,15 +119,15 @@ python report.py 600000 --title 午盘深度分析 --notes notes.json --sector-t
 `verdict / bull / bear / scenarios / watch / oneline` 几段定性内容
 （样例见 `examples/notes_sample.json`）。
 
-> 所有脚本默认按 **主板 / 价格上限 / 资金 6600 元** 过滤，可在脚本头部或命令行参数调整。
+> 所有脚本的**资金规模 / 板块权限 / 价格上限**都来自 `config.json`，脚本里没有任何预设值。
 > `report.py` 会调用 `backtest.py` 作为模块，两者须放在同一目录。
 
 ---
 
 ## 五、内置硬约束（可在 SKILL.md 顶部按自己情况修改）
 
-1. **仅主板**：60 / 000 / 001 / 002 / 003（排除创业板、科创板）
-2. **全仓单吊**：默认资金 6600 元，100 股整手
+1. **只做你权限内的板块**：由 `config.json` 的 `allowed_prefixes` 决定（默认沪深主板 60/000/001/002/003）
+2. **仓位模式**：默认全仓单吊，100 股整手
 3. **3 板及以上默认不接力**
 4. **板块内资金接力偏好必查**
 5. **禁止绝对化表述**：所有情景必须带概率，≥50% 标高概率

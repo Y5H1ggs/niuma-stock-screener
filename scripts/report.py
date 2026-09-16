@@ -4,9 +4,13 @@ report.py — 一键生成 HTML 深度分析报告（卡片式版式 · 顶部�
 
 用法:
     python report.py 600000
-    python report.py 600000 --title 午盘深度分析 --cash 6600 --sector-top 4
+    python report.py 600000 --title 午盘深度分析 --sector-top 4
     python report.py 600000 --notes notes.json      # 注入人工研判段落
     python report.py 600000 --no-bt --no-ladder     # 跳过回测/连板梯队（快）
+
+⚠️ 首次使用必须先完成【基础数据录入】：把 config.example.json 复制为 config.json，
+   填上你自己的 cash（资金）、allowed_prefixes（交易权限）、fee_rate_roundtrip（费用率）等。
+   脚本里没有任何预设的个人参数；--cash 省略时取 config.json 的值。
 
 notes.json（可选，全部字段都可缺省；缺省时用规则自动生成）:
 {
@@ -32,6 +36,7 @@ import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import cfg
 import ds
 from ds import (_fl, snapshot, ulist, fflow, slist, sector_stats, kline_qq,
                 indicators, kdj, mood, n100, allowed, tsym, get, MARKET_MAIN)
@@ -54,107 +59,126 @@ RATING_TIERS = [
 
 
 def score(d, notes):
-    """100 分制机械打分 → 券商式评级。四维：技术30 / 资金30 / 板块25 / 情绪15。"""
+    """100 分制机械打分 → 券商式评级。四维：技术30 / 资金30 / 板块25 / 情绪15。
+
+    校准原则（v2）：
+      ① **基准分 = 该维度满分的 50%**（技术15 / 资金15 / 板块12 / 情绪8），
+         即"无任何特征的普通票"= 50 分，正好落在「中性」档；
+      ② 每维**加分项合计 = 基准分**（使理论极值恰好 = 满分，不靠截断凑分）；
+      ③ 减分项与加分项基本对称；任一维度触底按 0 计、触顶按满分计。
+      这样分数才真正区分质量，而不是"人人 29/30"。
+    """
     s = d['snap']
     ind = d.get('ind') or {}
     flow = d['flow']
     dims = []
 
-    # ---------------- 技术面 30
+    # ---------------- 技术面 30（基准 15，加分项合计 15）
     items = []
-    sc = 15.0
     if ind:
+        sc = 15.0
         b = ind['boll']
         if ind.get('bull'):
-            sc += 6; items.append(('均线呈完整多头排列', +6))
+            sc += 4; items.append(('均线呈完整多头排列', +4))
         else:
             sc -= 4; items.append(('均线未成多头排列', -4))
         dev5 = (s['price'] / ind['ma5'] - 1) * 100 if ind.get('ma5') else 0
         if dev5 >= 0:
-            sc += 4; items.append((f'现价站上 MA5（{dev5:+.2f}%）', +4))
+            sc += 2; items.append((f'现价站上 MA5（{dev5:+.2f}%）', +2))
         else:
-            sc -= 4; items.append((f'现价跌破 MA5（{dev5:+.2f}%）', -4))
+            sc -= 3; items.append((f'现价跌破 MA5（{dev5:+.2f}%）', -3))
         if ind['macd']['dif'] > ind['macd']['dea']:
-            sc += 4; items.append(('MACD 金叉（DIF &gt; DEA）', +4))
+            sc += 2; items.append(('MACD 金叉（DIF &gt; DEA）', +2))
         else:
-            sc -= 3; items.append(('MACD 死叉（DIF &lt; DEA）', -3))
+            sc -= 2; items.append(('MACD 死叉（DIF &lt; DEA）', -2))
         pb = b['pctb']
         if pb >= 95:
-            sc -= 6; items.append((f'BOLL 位于通道 {pb:.0f}% 分位，贴/破上轨', -6))
+            sc -= 5; items.append((f'BOLL 位于通道 {pb:.0f}% 分位，贴/破上轨（位置风险）', -5))
         elif pb >= 80:
             sc -= 2; items.append((f'BOLL 位于通道 {pb:.0f}% 分位，偏上', -2))
         elif pb <= 40:
             sc += 1; items.append((f'BOLL 位于通道 {pb:.0f}% 分位，偏下', +1))
         else:
-            sc += 3; items.append((f'BOLL 位于通道 {pb:.0f}% 分位，居中', +3))
+            sc += 2; items.append((f'BOLL 位于通道 {pb:.0f}% 分位，居中（最佳介入带）', +2))
         r = ind.get('rsi14', 50)
         if r > 75:
             sc -= 5; items.append((f'RSI14 {r:.1f} 深度超买', -5))
         elif r > 70:
             sc -= 3; items.append((f'RSI14 {r:.1f} 超买', -3))
         elif r >= 45:
-            sc += 3; items.append((f'RSI14 {r:.1f} 健康区间', +3))
+            sc += 2; items.append((f'RSI14 {r:.1f} 健康区间', +2))
+        elif r < 30:
+            sc -= 1; items.append((f'RSI14 {r:.1f} 超卖（趋势偏弱）', -1))
+        else:
+            items.append((f'RSI14 {r:.1f} 偏弱但不极端', 0))
         c = ind.get('cci20', 0)
         if c > 200:
             sc -= 4; items.append((f'CCI20 {c:.0f} 极度超买', -4))
         elif c > 100:
-            sc -= 3; items.append((f'CCI20 {c:.0f} 超买', -3))
+            sc -= 2; items.append((f'CCI20 {c:.0f} 超买', -2))
         elif c >= 0:
-            sc += 2; items.append((f'CCI20 {c:.0f} 偏强未过热', +2))
+            sc += 1; items.append((f'CCI20 {c:.0f} 偏强未过热', +1))
+        else:
+            sc -= 1; items.append((f'CCI20 {c:.0f} 为负，动能转弱', -1))
+    else:
+        sc = 15.0
+        items.append(('技术指标未取到（K 线源不可用），本维度按中性 15/30 计', 0))
     v = d.get('vr20', 0)
     if v >= 2:
-        sc += 3; items.append((f'成交量为 20 日均量 {v:.2f} 倍，显著放量', +3))
+        sc += 2; items.append((f'成交量为 20 日均量 {v:.2f} 倍，显著放量', +2))
     elif v >= 1.5:
-        sc += 2; items.append((f'成交量为 20 日均量 {v:.2f} 倍，温和放量', +2))
+        sc += 1; items.append((f'成交量为 20 日均量 {v:.2f} 倍，温和放量', +1))
     elif v < 1:
         sc -= 2; items.append((f'成交量为 20 日均量 {v:.2f} 倍，缩量', -2))
+    else:
+        items.append((f'成交量为 20 日均量 {v:.2f} 倍，平量（无信息量）', 0))
     dims.append(('技术面', max(0, min(30, sc)), 30, items))
 
-    # ---------------- 资金面 30
+    # ---------------- 资金面 30（基准 15，加分项合计 15）
     items = []
     if not d.get('flow_ok', True):
         # 取数失败绝不参与加减分，按中性计，否则会给出与事实相反的极低分
         dims.append(('资金面', 15, 30,
                      [('资金流数据获取失败（ulist 限流），本维度<b>按中性 15/30 计</b>，不参与加减分', 0)]))
     else:
-        sc = 12.0
+        sc = 15.0
         if flow['zl'] > 0:
-            sc += 6; items.append((f"主力净流入 {money(flow['zl'])}", +6))
+            sc += 4; items.append((f"主力净流入 {money(flow['zl'])}", +4))
         else:
-            sc -= 6; items.append((f"主力净流出 {money(flow['zl'])}", -6))
+            sc -= 5; items.append((f"主力净流出 {money(flow['zl'])}", -5))
         np_ = flow.get('net_pct', 0) or 0
         if np_ >= 30:
-            sc += 6; items.append((f'主力净占比 {np_:.2f}%，强势介入', +6))
+            sc += 3; items.append((f'主力净占比 {np_:.2f}%，强势介入', +3))
         elif np_ >= 10:
-            sc += 4; items.append((f'主力净占比 {np_:.2f}%，较强', +4))
+            sc += 2; items.append((f'主力净占比 {np_:.2f}%，较强', +2))
         elif np_ > 0:
             sc += 1; items.append((f'主力净占比 {np_:.2f}%，仅属温和', +1))
         else:
-            sc -= 4; items.append((f'主力净占比 {np_:.2f}%，为负', -4))
+            sc -= 3; items.append((f'主力净占比 {np_:.2f}%，为负', -3))
         fd = d.get('flow_days') or []
         if fd:
             neg = sum(1 for x in fd if _fl(x[1]) < 0)
             if neg <= 1:
-                sc += 5; items.append((f'近 {len(fd)} 日主力负值仅 {neg} 天，连续性良好', +5))
+                sc += 3; items.append((f'近 {len(fd)} 日主力负值仅 {neg} 天，连续性良好', +3))
             elif neg == 2:
                 sc += 2; items.append((f'近 {len(fd)} 日主力负值 {neg} 天，基本连续', +2))
             elif neg >= len(fd) * 0.5:
-                sc -= 4; items.append((f'近 {len(fd)} 日主力负值 {neg} 天，持续失血', -4))
+                sc -= 3; items.append((f'近 {len(fd)} 日主力负值 {neg} 天，持续失血', -3))
             else:
                 sc -= 1; items.append((f'近 {len(fd)} 日主力负值 {neg} 天，不够稳定', -1))
         else:
             items.append(('日线级资金流未取到，历史连续性未参与计分', 0))
         if flow['xl'] > 0:
-            sc += 4; items.append((f"超大单净流入 {money(flow['xl'])}（机构级）", +4))
+            sc += 3; items.append((f"超大单净流入 {money(flow['xl'])}（机构级）", +3))
         else:
             sc -= 3; items.append((f"超大单净流出 {money(flow['xl'])}", -3))
         if s['outer'] > s['inner']:
-            sc += 3; items.append(('外盘 &gt; 内盘，主动买占优', +3))
+            sc += 2; items.append(('外盘 &gt; 内盘，主动买占优', +2))
         else:
             sc -= 2; items.append(('内盘 &gt; 外盘，主动卖占优', -2))
         dims.append(('资金面', max(0, min(30, sc)), 30, items))
 
-    # ---------------- 板块面 25
+    # ---------------- 板块面 25（基准 12，加分项合计 13）
     items = []
     sc = 12.0
     lead = [x for x in d['sectors'] if x.get('rel') is not None]
@@ -166,9 +190,9 @@ def score(d, notes):
         elif rel >= 0:
             sc += 4; items.append((f"略领先主线板块 {best['name']} 中位数 {rel:.2f}pp", +4))
         elif rel >= -1:
-            sc -= 3; items.append((f"跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -3))
+            sc -= 2; items.append((f"跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -2))
         else:
-            sc -= 6; items.append((f"显著跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -6))
+            sc -= 5; items.append((f"显著跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -5))
         zl = best['zl']
         if zl >= 50:
             sc += 4; items.append((f'板块主力净流入 {zl:.1f} 亿，资金主战场', +4))
@@ -178,21 +202,22 @@ def score(d, notes):
             sc -= 3; items.append((f'板块主力净流出 {zl:.1f} 亿', -3))
         ur = best['up'] / max(1, best['n']) * 100
         if ur >= 80:
-            sc += 3; items.append((f'板块红盘率 {ur:.0f}%，普涨', +3))
+            sc += 2; items.append((f'板块红盘率 {ur:.0f}%，普涨', +2))
         elif ur >= 50:
             sc += 1; items.append((f'板块红盘率 {ur:.0f}%', +1))
         else:
             sc -= 3; items.append((f'板块红盘率仅 {ur:.0f}%，普跌', -3))
         inlim = any(str(c) == str(d['code']) for x in d['sectors'] for c, _, _ in x['limit_up'])
         if inlim:
-            sc += 2; items.append(('在板块涨停／准涨停名单内（资金接力类型包含它）', +2))
+            sc += 1; items.append(('在板块涨停／准涨停名单内（资金接力类型包含它）', +1))
         else:
             items.append(('不在板块涨停名单内（属跟风位）', 0))
     else:
-        items.append(('板块数据缺失', 0))
+        items.append(('板块数据缺失，本维度按中性 12/25 计', 0))
     dims.append(('板块面', max(0, min(25, sc)), 25, items))
 
-    # ---------------- 情绪面 15
+    # ---------------- 情绪面 15（基准 8，加分项合计 7）
+    # 注：这一维是"市场级"指标，同日对所有个股几乎同分，只承担环境闸门作用。
     items = []
     sc = 8.0
     m = d.get('mood') or {}
@@ -201,6 +226,8 @@ def score(d, notes):
         sc -= 4; items.append(('昨日涨停系"价强钱撤"（板指涨、主力净流出）', -4))
     elif m:
         sc += 4; items.append(('昨日涨停系资金净流入，接力环境健康', +4))
+    else:
+        items.append(('情绪数据未取到，本维度按中性 8/15 计', 0))
     lad = d.get('ladder') or []
     n2 = sum(1 for x in lad if x[2] >= 2)
     if n2 >= 10:
@@ -318,10 +345,17 @@ def ladder_scan(topn=80):
 
 
 # ------------------------------------------------------------------ 数据汇总
-def gather(code, sector_top=4, cash=6600, do_bt=True, do_ladder=True):
-    d = {'code': code, 'cash': cash}
+def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
+    if cash is None:
+        cash = cfg.get('cash') or 0
+    d = {'code': code, 'cash': cash,
+         'fee': float(cfg.get('fee_rate_roundtrip', 0.0018)),
+         'stop': float(cfg.get('stop_loss_pct', -4.0)),
+         'target': float(cfg.get('take_profit_pct', 2.0))}
     if not allowed(code):
-        d['warn_allowed'] = '⚠️ 非主板标的（本 skill 硬约束仅 60/000/001/002/003）'
+        pre = '、'.join(str(x) for x in (cfg.get('allowed_prefixes') or []))
+        d['warn_allowed'] = (f'⚠️ 该标的超出你在 config.json 里声明的可交易板块'
+                             f'（allowed_prefixes = {pre}），仅作分析展示。')
 
     snap = snapshot([code])
     s = snap.get(str(code))
@@ -681,7 +715,9 @@ def rating_hero(sc, notes):
     <div class="bar {tbar}"><i style="width:{min(100, tot)}%"></i></div>
   </div>
   <div class="hdesc">{sc['desc']}
-    <div class="hnote">口径：技术面 30 + 资金面 30 + 板块面 25 + 情绪面 15 机械加总，
+    <div class="hnote">口径：技术面 30 + 资金面 30 + 板块面 25 + 情绪面 15＝100。
+    <b>各维度基准分＝满分×50%</b>（即无特征的普通票 = 50 分，正落在"中性"档），
+    加减分对称、加分项合计恰好等于基准分，理论极值 = 100。
     映射券商投资评级五档（买入／增持／中性／减持／卖出）。<b>评级为模型输出，不构成任何买卖指令。</b></div>
   </div>
 </div>
@@ -746,7 +782,7 @@ def build(d, notes):
   <div>
     <h1>{esc(name)}<span class="code">{code}</span><span class="kind">{esc(title)}</span></h1>
     <div class="tagline">数据时点 <b>{date_s} {hm}</b>（盘中）　·　
-{'沪市' if str(code).startswith('6') else '深市'}主板　·　
+{'沪市' if str(code).startswith('6') else '深市'}　·　
 {esc(notes.get('subtitle') or '实时数据 + 板块横向对比 + 历史形态回测')}</div>
   </div>
   <div class="px">
@@ -795,7 +831,7 @@ def build(d, notes):
 <tr><td>买1 / 卖1 挂单</td><td class="num">{s['bids'][0][1] if s['bids'] else 0} / {s['asks'][0][1] if s['asks'] else 0} 手</td><td>{'近端承接薄' if s['bids'] and s['bids'][0][1] < 500 else '近端承接正常'}</td></tr>
 {flowrow}
 <tr><td>大盘（{hm}）</td><td>{'　|　'.join(ibits)}</td><td>—</td></tr>
-<tr><td>资金占用</td><td><b>{n100(s['price'], d['cash'])} 股 = {n100(s['price'], d['cash']) * s['price']:.0f} 元</b>（本金 {d['cash']:.0f}）</td><td>双边费用约 {n100(s['price'], d['cash']) * s['price'] * 0.0018:.0f} 元，需涨 0.18% 才回本</td></tr>
+<tr><td>资金占用</td><td><b>{n100(s['price'], d['cash'])} 股 = {n100(s['price'], d['cash']) * s['price']:.0f} 元</b>（config 资金 {d['cash']:.0f}）</td><td>双边费用约 {n100(s['price'], d['cash']) * s['price'] * d['fee']:.0f} 元，需涨 {d['fee'] * 100:.2f}% 才回本</td></tr>
 </table>'''
     A(C('一、数据速览',
         SC('核心盘口', kp, cnt=f'{hm} 快照')
@@ -1044,12 +1080,17 @@ def build(d, notes):
     ul.append('资金流按成交单大小推断主体，存在拆单干扰；单日数据噪音大，须以 2~3 日连续性验证。')
     ul.append('板块内排名靠后的跟风票，板块退潮时跌幅常大于龙头；若最猛的主线正主在 688/300，'
               '无交易权限则只能吃主板影子票，联动强度天然打折。')
-    ul.append(f'本金 {d["cash"]:.0f} 元双边费用约 {n100(s["price"], d["cash"]) * s["price"] * 0.0018:.0f} 元'
-              f'（0.18%），日内 ±1% 的波动不等于收益。')
+    ul.append(f'按 config 资金 {d["cash"]:.0f} 元，双边费用约 '
+              f'{n100(s["price"], d["cash"]) * s["price"] * d["fee"]:.0f} 元'
+              f'（{d["fee"] * 100:.2f}%），日内 ±1% 的波动不等于收益。')
+    ul.append(f'你的止损纪律为 <b>{d["stop"]:.1f}%</b>，兑现目标 {d["target"]:.1f}%；'
+              f'触发即执行，不因"形态还没坏"而放宽——超短模式的 alpha 在风控不在选股。')
     ul.append('<b>顶部评级为 100 分制机械打分结果，非券商研报、非投资建议、不构成任何买卖指令</b>；'
               '据此操作风险自担。')
     if not allowed(code):
-        ul.append('🔴 <b>该标的非主板</b>，超出本项目硬约束（仅 60/000/001/002/003）。')
+        pre = '、'.join(str(x) for x in (cfg.get('allowed_prefixes') or []))
+        ul.append(f'🔴 <b>该标的不在 config 声明的可交易板块内</b>'
+                  f'（allowed_prefixes = {pre}），无权限则不可操作，本节仅作分析参考。')
     ul.append('<b>以上为客观数据推演与主观概率估计，仅供参考，据此操作风险自担。</b>')
     A(C('八、风险提示',
         SC('风险清单（必读）', '<ul>' + ''.join(f'<li>{x}</li>' for x in ul) + '</ul>',
@@ -1066,7 +1107,9 @@ def build(d, notes):
 区间内有分红送转时涨停价判定存在误差，回测数值约有 ±0.1pp 级偏差。<br>
 回测口径：信号日收盘价买入 → 次日卖出；主板涨停价 = round(昨日收盘 × 1.10, 2)；
 "触及"判定 high ≥ 涨停价 − 0.011，"封板"判定 close ≥ 涨停价 − 0.001。<br>
-评级口径：技术 30 + 资金 30 + 板块 25 + 情绪 15 = 100 分，映射券商五档（买入／增持／中性／减持／卖出）。<br>
+评级口径：技术 30 + 资金 30 + 板块 25 + 情绪 15 = 100 分，<b>各维基准分 = 满分×50%</b>
+（普通票 = 50 分 =「中性」档中心），加分项合计 = 基准分，理论极值 100，不靠上限截断凑分。<br>
+映射券商五档：≥80 买入 / 65~79 增持 / 45~64 中性 / 30~44 减持 / &lt;30 卖出。<br>
 报告生成时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}　|　本报告为个人研究记录，不构成投资建议。
 </div>
 
@@ -1082,12 +1125,15 @@ def main():
     ap.add_argument('code', help='6 位股票代码')
     ap.add_argument('--title', default='深度分析', help='报告标题（如 午盘深度分析）')
     ap.add_argument('--out', default=None, help='输出路径')
-    ap.add_argument('--cash', type=float, default=6600, help='可用资金（默认 6600）')
+    ap.add_argument('--cash', type=float, default=None,
+                    help='可用资金；省略时取 config.json 的 cash')
     ap.add_argument('--sector-top', type=int, default=4, help='展示几个板块')
     ap.add_argument('--notes', default=None, help='notes.json 路径（注入人工研判段落）')
     ap.add_argument('--no-bt', action='store_true', help='跳过回测（更快）')
     ap.add_argument('--no-ladder', action='store_true', help='跳过连板梯队扫描')
     a = ap.parse_args()
+
+    cfg.require()          # 首次使用必须先做基础数据录入（资金/权限/费用率）
 
     notes = {}
     if a.notes and os.path.exists(a.notes):
@@ -1095,8 +1141,10 @@ def main():
     if a.title:
         notes.setdefault('title', a.title)
 
-    print(f'[1/3] 采集 {a.code} 数据 …')
-    d = gather(a.code, sector_top=a.sector_top, cash=a.cash,
+    cash = a.cash if a.cash else cfg.get('cash')
+    print(f'[1/3] 采集 {a.code} 数据 …（资金 {cash:.0f} 元，来源：'
+          f'{"命令行" if a.cash else "config.json"}）')
+    d = gather(a.code, sector_top=a.sector_top, cash=cash,
                do_bt=not a.no_bt, do_ladder=not a.no_ladder)
     s = d['snap']
     sc = score(d, notes)
