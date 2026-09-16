@@ -17,6 +17,8 @@ ds.py — A股 T+1 选股便携数据源库（纯标准库，零依赖）
 import urllib.request, json, ssl, time, math, re
 
 # ---------------------------------------------------------------- 基础
+import cfg                        # 个人参数（资金/权限/费用）全部外置到 config.json
+
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
 CTX.verify_mode = ssl.CERT_NONE
@@ -53,11 +55,11 @@ def _fl(x, d=0.0):
 
 
 def allowed(code):
-    """硬约束：仅主板 60/000/001/002/003。"""
+    """是否落在 config.json 声明的可交易板块内（默认沪深主板 60/000/001/002/003）。
+    注意：这不是"市场规则"，而是**每个使用者自己的交易权限**——所以放在 config 里。"""
     c = str(code)
-    if c.startswith(('300', '301', '302', '688', '689', '8', '4', '9')):
-        return False
-    return c.startswith(('60', '000', '001', '002', '003'))
+    pre = cfg.get('allowed_prefixes') or []
+    return any(c.startswith(str(p)) for p in pre)
 
 
 def secid(code):
@@ -72,8 +74,10 @@ def tsym(code):
     return ('sh' if c.startswith('6') else 'sz') + c
 
 
-def n100(price, cash=6600):
-    """可买股数（100 股整手）"""
+def n100(price, cash=None):
+    """可买股数（100 股整手）。cash 缺省时取 config.json 里的 cash（个人资金不在代码里）。"""
+    if cash is None:
+        cash = cfg.get('cash') or 0
     p = _fl(price)
     return int(cash // (p * 100)) * 100 if p > 0 else 0
 

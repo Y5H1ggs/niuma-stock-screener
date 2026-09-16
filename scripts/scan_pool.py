@@ -6,21 +6,25 @@ scan_pool.py — 全市场候选池扫描（三种口径）
     python scan_pool.py strong    # 强势口径（涨停/准涨停，T+1 打板接力）
     python scan_pool.py trend     # 趋势口径（排除涨停，走势稳定向上）
     python scan_pool.py potential # 潜力口径（未涨停+量能+资金，次日补涨）
-    python scan_pool.py strong --cash 6600 --maxpx 15
+    python scan_pool.py strong --cash 100000 --maxpx 15   # --cash 省略则取 config.json
 输出：标准输出表格 + pool.json
 """
 import sys, json, time
+import cfg
 from ds import (snapshot, clist, kline, indicators, allowed, n100, MARKET_MAIN, _fl)
 
-CASH = 6600
-MAXPX = 15.0
+CASH = None          # None = 用 config.json 的 cash（个人资金不写死在代码里）
+MAXPX = None         # None = 用 config.json 的 max_price（可再被 --maxpx 覆盖）
 
 
 def load_rows(pages=10):
     rows = clist(fid='f3', fs=MARKET_MAIN, pages=pages,
                  fields='f12,f14,f2,f3,f6,f8,f10,f20,f62,f100')
-    return [x for x in rows if allowed(str(x.get('f12', ''))) and 'ST' not in str(x.get('f14', ''))
-            and '退' not in str(x.get('f14', ''))]
+    out = [x for x in rows if allowed(str(x.get('f12', '')))]
+    if cfg.get('exclude_st', True):
+        out = [x for x in out
+               if 'ST' not in str(x.get('f14', '')).upper() and '退' not in str(x.get('f14', ''))]
+    return out
 
 
 def base(x):
@@ -89,14 +93,18 @@ def show(cands, title):
 
 
 if __name__ == '__main__':
+    cfg.require()                      # 首次使用必须先做基础数据录入
     mode = sys.argv[1] if len(sys.argv) > 1 else 'strong'
+    CASH = cfg.get('cash')
+    MAXPX = cfg.get('max_price')
     for i, a in enumerate(sys.argv):
         if a == '--cash':
             CASH = int(sys.argv[i + 1])
         if a == '--maxpx':
             MAXPX = float(sys.argv[i + 1])
     rows = load_rows()
-    print(f'主板候选池(涨幅降序抓取): {len(rows)} 只')
+    print(f'候选池(涨幅降序抓取，已按 config 的板块权限过滤): {len(rows)} 只'
+          f'　资金 {CASH:.0f} 元' + (f'　价格上限 {MAXPX:g} 元' if MAXPX else '　不限价'))
     cands = screen(rows, mode)
     cands.sort(key=lambda x: -x['zl'])
     show(cands, f'{mode} 口径')
