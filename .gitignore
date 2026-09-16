@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 报告产物 / 数据缓存（不要进仓库）
+*.html
+*.pdf
+_kcache/
+*.json.tmp
+_nextday_*.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
