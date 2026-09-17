@@ -165,7 +165,7 @@ def score(d, notes):
         else:
             items.append(('主力净占比 0%，无方向信息、不参与计分', 0))
         fd = d.get('flow_days') or []
-        if fd:
+        if len(fd) >= 3:
             neg = sum(1 for x in fd if _fl(x[1]) < 0)
             if neg <= 1:
                 sc += 3; items.append((f'近 {len(fd)} 日主力负值仅 {neg} 天，连续性良好', +3))
@@ -175,6 +175,9 @@ def score(d, notes):
                 sc -= 3; items.append((f'近 {len(fd)} 日主力负值 {neg} 天，持续失血', -3))
             else:
                 sc -= 1; items.append((f'近 {len(fd)} 日主力负值 {neg} 天，不够稳定', -1))
+        elif fd:
+            # 样本不足 3 天时，"0 天负值"只是碰巧，不构成"连续性良好"，禁止据此加分
+            items.append((f'日线级资金流仅取到 {len(fd)} 天（样本不足 3 天），不判连续性、不予加分', 0))
         else:
             items.append(('日线级资金流未取到，历史连续性未参与计分', 0))
         xl_ = flow.get('xl')
@@ -186,12 +189,19 @@ def score(d, notes):
             sc -= 3; items.append((f"超大单净流出 {money(abs(xl_))}", -3))
         else:
             items.append(('超大单净额为 0，无方向信息、不参与计分', 0))
-        if s.get('pre_open') or (s['outer'] == 0 and s['inner'] == 0):
+        ot, it = s['outer'], s['inner']
+        if s.get('pre_open') or (ot == 0 and it == 0):
             items.append(('内外盘数据不可用（盘前快照），不参与计分', 0))
-        elif s['outer'] > s['inner']:
-            sc += 2; items.append(('外盘 &gt; 内盘，主动买占优', +2))
+        elif ot + it == 0:
+            items.append(('内外盘数据不可用，不参与计分', 0))
         else:
-            sc -= 2; items.append(('内盘 &gt; 外盘，主动卖占优', -2))
+            gap = (ot - it) / (ot + it) * 100
+            if gap >= 10:
+                sc += 2; items.append((f'外盘显著大于内盘（主动买占优 {gap:+.1f}%）', +2))
+            elif gap <= -10:
+                sc -= 2; items.append((f'内盘显著大于外盘（主动卖占优 {gap:.1f}%）', -2))
+            else:
+                items.append((f'内外盘基本均衡（差 {gap:+.1f}%），无方向信息、不参与计分', 0))
         dims.append(('资金面', max(0, min(30, sc)), 30, items))
 
     # ---------------- 板块面 25（基准 12，加分项合计 13）
@@ -303,6 +313,20 @@ def money(v, unit='万'):
     except (TypeError, ValueError):
         return '—'
     return f'{v / 1e4:+.0f}{unit}' if unit == '万' else f'{v / 1e8:+.2f}亿'
+
+
+def _pct(v):
+    """东财百分比字段（f184 主力净占比等）以 ×100 存储：真实 4.11% 返回 411。
+    ⚠️ 不做 /100 会让报告直接印出「主力净占比 411.00%，强势介入」这种荒谬数字，
+       并把「温和流入」误判为「强力介入」而多加分。
+    合理性保护：真正的净占比是「主力净额 / 当日成交额」，不可能 |x| > 100，
+       超过即判定为量纲未归一，自动 /100。返回 None 表示取数失败（不参与计分）。"""
+    if not _ok(v):
+        return None
+    x = _fl(v)
+    if abs(x) > 100:
+        x = x / 100.0
+    return x
 
 
 def minute(code):
@@ -463,7 +487,7 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
     d['flow_ok'] = bool(ul) and _ok(ul.get('f62'))
     d['flow'] = {
         'zl': _fl(ul.get('f62')) if _ok(ul.get('f62')) else None,
-        'net_pct': _fl(ul.get('f184')) if _ok(ul.get('f184')) else None,
+        'net_pct': _pct(ul.get('f184')),
         'xl': _fl(ul.get('f66')) if _ok(ul.get('f66')) else None,
         'dl': _fl(ul.get('f72')) if _ok(ul.get('f72')) else None,
         'zl2': _fl(ul.get('f78')) if _ok(ul.get('f78')) else None,
