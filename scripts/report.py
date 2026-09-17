@@ -216,9 +216,15 @@ def score(d, notes):
         elif rel >= 0:
             sc += 4; items.append((f"略领先主线板块 {best['name']} 中位数 {rel:.2f}pp", +4))
         elif rel >= -1:
-            sc -= 2; items.append((f"跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -2))
+            sc -= 3; items.append((f"跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -3))
+        elif rel >= -2:
+            sc -= 6; items.append((f"显著跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -6))
         else:
-            sc -= 5; items.append((f"显著跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -5))
+            # ★ 铁律 1/3 的量化落点：板块整体走强（或至少不弱）而个股大幅落后，
+            #   说明资金在同一个方向里选了别的票 —— 这是 T+1 模式最该躲开的形态，
+            #   不论均线多漂亮。故给最重的一档扣分。
+            sc -= 10; items.append((f"严重跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp"
+                                    f"（资金在同方向内选择了其他标的，脱离板块式走弱）", -10))
         zl = best.get('zl')
         if zl is None:
             items.append(('板块主力净额未取到（盘前/限流），不参与计分', 0))
@@ -283,8 +289,18 @@ def score(d, notes):
         missing.append('技术面')
     if not d.get('mood') and not d.get('ladder'):
         missing.append('情绪面')
+
+    # ★ 数据完整度闸门（P30，2026-09-17 新增）
+    # 资金面(30) + 板块面(25) 合计 55 分，是判断"今日能不能做"的两个主维度。
+    # 两者同时取数失败时，它们各自的"基准分"会把任何票都往 50 分（中性档）拉：
+    # 数字看上去像结论，实际信息量为零 —— 比直说"不予评级"危险得多。
+    # 实测案例：标的甲 09-17 盘中逆板块跌 2.96%、板块内排名 345/356，
+    # 打出"中性 52/100"，而当日 −4% 的真实答案被这个数字掩盖。
+    no_rating = all(x in missing for x in ('资金面', '板块面'))
+    if no_rating:
+        rating, tone_, rdesc = '数据不足', 'y', '资金面与板块面均取数失败，本次不提供评级'
     return {'total': round(total), 'rating': rating, 'tone': tone_, 'desc': rdesc,
-            'dims': dims, 'missing': missing}
+            'dims': dims, 'missing': missing, 'no_rating': no_rating}
 
 
 # ------------------------------------------------------------------ 工具
@@ -793,7 +809,18 @@ def rating_hero(sc, notes):
     """顶部评级：深色 hero 卡（大字评级 + 分数条 + 四维得分 + 数据完整度）"""
     tone = sc['tone']
     tot = sc['total']
-    tbar = '' if tot >= 65 else ('y' if tot >= 45 else 'g')
+    nr = sc.get('no_rating')
+    if nr:
+        tbar = ''
+        scoreblock = ('<div class="score" style="font-size:30px">—</div>'
+                      '<div class="hnote" style="margin-top:6px">主维度数据缺失，'
+                      '打分无信息量，故不给出分数</div>')
+        gsub = '不予评级'
+    else:
+        tbar = '' if tot >= 65 else ('y' if tot >= 45 else 'g')
+        scoreblock = (f'<div class="score">{tot}<small> / 100</small></div>'
+                      f'<div class="bar {tbar}"><i style="width:{min(100, tot)}%"></i></div>')
+        gsub = f'{tot} / 100 分'
     dimrows = ''
     for name, got, mx, items in sc['dims']:
         w = got / mx * 100
@@ -802,7 +829,13 @@ def rating_hero(sc, notes):
                     f'<span class="bar {barcls}"><i style="width:{w:.0f}%"></i></span>'
                     f'<span class="num">{got:.0f} / {mx}</span></div>')
     miss = ''
-    if sc.get('missing'):
+    if nr:
+        miss = ('<div class="warnbox"><b>⚠️ 本次不提供评级</b>　'
+                '资金面（主力资金流）与板块面（同板块横向对比）<b>均取数失败</b>，'
+                '这两个维度合计 55 分无法评估。若强行把它们按"中性"计分再输出一个总分，'
+                '任何一只票都会落在 50 分附近 —— <b>看似结论，实则零信息量</b>。'
+                '请以本报告下方的技术面、盘口与情景分析为准。</div>')
+    elif sc.get('missing'):
         miss = (f'<div class="warnbox"><b>⚠️ 数据完整度</b>　以下维度取数失败，'
                 f'<b>已按中性计、未参与加减分</b>：{ "、".join(sc["missing"]) }。'
                 f'该维度不提供信息量，本次评级的置信度相应下降。</div>')
@@ -810,11 +843,10 @@ def rating_hero(sc, notes):
 <div class="hmain">
   <div>
     <div class="grade {tone}">{sc['rating']}</div>
-    <div class="gsub">{tot} / 100 分</div>
+    <div class="gsub">{gsub}</div>
   </div>
   <div style="min-width:170px">
-    <div class="score">{tot}<small> / 100</small></div>
-    <div class="bar {tbar}"><i style="width:{min(100, tot)}%"></i></div>
+    {scoreblock}
   </div>
   <div class="hdesc">{sc['desc']}
     <div class="hnote">口径：技术面 30 + 资金面 30 + 板块面 25 + 情绪面 15＝100。
@@ -1316,7 +1348,9 @@ def main():
           f'{"[盘前·用上一交易日收盘]" if d.get("pre_open") else ""}'
           f'板块{len(d["sectors"])}个  回测形态{len(d.get("bt") or [])}个  '
           f'连板{len(d.get("ladder") or [])}只')
-    print(f'      评级 {sc["rating"]} {sc["total"]}/100  '
+    _r = (f'评级 {sc["rating"]}（不予评级，主维度数据缺失）'
+          if sc.get('no_rating') else f'评级 {sc["rating"]} {sc["total"]}/100')
+    print(f'      {_r}  '
           + ' '.join(f'{n}{g:.0f}/{m}' for n, g, m, _ in sc['dims']))
 
     print('[2/3] 渲染 HTML …')
