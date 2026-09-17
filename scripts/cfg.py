@@ -22,7 +22,11 @@ DEFAULTS = {
     'max_price': None,                              # 单票价格上限（元），null = 不限
     'allowed_prefixes': ['60', '000', '001', '002', '003'],   # 你有权限交易的板块前缀
     'exclude_st': True,                             # 是否剔除 ST / 退市风险
-    'fee_rate_roundtrip': 0.0018,                   # 双边综合费用率（佣金+印花税+过户费）
+    'commission_rate': 0.00025,                     # 佣金费率（万2.5 写成 0.00025）
+    'commission_min': 5.0,                          # ★ 每边最低佣金（元）—— 小资金最大的摩擦成本
+    'stamp_tax_rate': 0.0005,                       # 印花税（仅卖出方收取）
+    'transfer_fee_rate': 0.00001,                   # 过户费（双边收取）
+    'fee_rate_roundtrip': None,                     # 旧版粗略比例口径（仅旧配置生效）
     'stop_loss_pct': -4.0,                          # 你的止损纪律（负值，%）
     'take_profit_pct': 2.0,                         # 兑现目标（%）
     'position_mode': 'single',                      # single = 全仓单吊单只
@@ -104,9 +108,85 @@ def require():
     return c
 
 
+# ------------------------------------------------------------ 费用与纪律计算
+def _rates():
+    """返回 (佣金率, 最低佣金, 印花税率, 过户费率)。"""
+    cr, cmin = get('commission_rate'), get('commission_min')
+    st, tf = get('stamp_tax_rate'), get('transfer_fee_rate')
+    if None in (cr, cmin, st, tf):
+        rt = float(get('fee_rate_roundtrip') or 0.0018)   # 向后兼容旧配置
+        return rt * 0.35, 0.0, rt * 0.5, rt * 0.15
+    return float(cr), float(cmin), float(st), float(tf)
+
+
+def buy_cost(price, shares):
+    """买入总支出（含佣金 + 过户费）。"""
+    cr, cmin, _st, tf = _rates()
+    amt = price * shares
+    return amt + max(cmin, amt * cr) + amt * tf
+
+
+def sell_proceeds(price, shares):
+    """卖出净得（扣佣金 + 印花税 + 过户费）。"""
+    cr, cmin, st, tf = _rates()
+    amt = price * shares
+    return amt - max(cmin, amt * cr) - amt * st - amt * tf
+
+
+def _solve(shares, target_net, hi=None):
+    """二分求"卖出净得 = target_net"对应的价格。"""
+    cr, cmin, st, tf = _rates()
+    if hi is None:
+        hi = max(target_net / max(shares, 1) * 3.0, 1.0)
+    lo = 0.0
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        amt = mid * shares
+        net = amt - max(cmin, amt * cr) - amt * st - amt * tf
+        if net < target_net:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def break_even(price, shares):
+    """含双边费用的真实保本卖出价（注意：高于成本价本身）。"""
+    return _solve(shares, buy_cost(price, shares))
+
+
+def stop_price(cost, shares, pct=None):
+    """按 stop_loss_pct 计算的止损触发价。
+
+    口径：亏损额 = 买入总支出 × pct，即**含费的真实亏损**，
+    因此会比"成本价 × (1+pct)"略低一点（小资金下约低 0.1~0.3%）。
+    """
+    p = float(get('stop_loss_pct', -4.0) if pct is None else pct)
+    return _solve(shares, buy_cost(cost, shares) * (1 + p / 100.0))
+
+
+def roundtrip_fee(price, shares):
+    """一次完整买入+卖出的总费用（元）。"""
+    amt = price * shares
+    return (buy_cost(price, shares) - amt) + (amt - sell_proceeds(price, shares))
+
+
 if __name__ == '__main__':
     print('config.json 路径:', CFG_PATH)
     print('是否存在:', exists())
     if exists():
         for k, v in _read().items():
             print(f'  {k:22s} = {v}')
+        c = _read()
+        if c.get('cash'):
+            px = min(float(c.get('max_price') or 10.0), 10.0)
+            sh = int(float(c['cash']) / px / 100) * 100
+            if sh > 0:
+                be, sp = break_even(px, sh), stop_price(px, sh)
+                print()
+                print(f'  费用模型自检（按 {px:.2f} 元买 {sh} 股）:')
+                print(f'    买入总支出   {buy_cost(px, sh):>10,.2f} 元')
+                print(f'    双边总费用   {roundtrip_fee(px, sh):>10,.2f} 元 '
+                      f'（占 {roundtrip_fee(px, sh) / buy_cost(px, sh) * 100:.3f}%）')
+                print(f'    保本卖出价   {be:>10.4f} 元（需涨 {(be / px - 1) * 100:+.2f}%）')
+                print(f'    止损触发价   {sp:>10.4f} 元（{c.get("stop_loss_pct")}% 含费口径）')

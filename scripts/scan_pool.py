@@ -11,7 +11,7 @@ scan_pool.py — 全市场候选池扫描（三种口径）
 """
 import sys, json, time
 import cfg
-from ds import (snapshot, clist, kline, indicators, allowed, n100, MARKET_MAIN, _fl)
+from ds import (snapshot, clist, kline, indicators, allowed, n100, MARKET_MAIN, _fl, _ok)
 
 CASH = None          # None = 用 config.json 的 cash（个人资金不写死在代码里）
 MAXPX = None         # None = 用 config.json 的 max_price（可再被 --maxpx 覆盖）
@@ -28,35 +28,50 @@ def load_rows(pages=10):
 
 
 def base(x):
-    return {'code': str(x['f12']), 'name': x['f14'], 'price': _fl(x['f2']), 'chg': _fl(x['f3']),
+    zl_raw, zl_ok = x.get('f62'), _ok(x.get('f62'))
+    chg_raw, chg_ok = x.get('f3'), _ok(x.get('f3'))
+    return {'code': str(x['f12']), 'name': x['f14'], 'price': _fl(x['f2']),
+            'chg': _fl(chg_raw) if chg_ok else 0.0, 'chg_ok': chg_ok,
             'amt': _fl(x['f6']) / 1e8, 'hs': _fl(x['f8']), 'lb': _fl(x['f10']),
-            'zl': _fl(x['f62']) / 1e8, 'blank': x.get('f100', '')}
+            'zl': _fl(zl_raw) / 1e8 if zl_ok else None, 'zl_ok': zl_ok,
+            'blank': x.get('f100', '')}
 
 
 def screen(rows, mode):
-    out = []
+    """口径过滤。⚠️ 资金字段取数失败时**不据此剔除**（P23：把"取数失败"当"资金流出"
+    会静默制造利空），而是保留并显式警告。"""
+    if mode not in ('strong', 'trend', 'potential'):
+        raise SystemExit('mode: strong | trend | potential')
+    out, no_zl = [], 0
     for x in rows:
         try:
             r = base(x)
         except Exception:
             continue
-        if r['price'] <= 0 or r['price'] > MAXPX:
+        if r['price'] <= 0:
+            continue
+        if MAXPX and r['price'] > MAXPX:       # MAXPX 为 None 时不得直接比较（会 TypeError）
             continue
         if not (r['lb'] >= 1.5 or r['hs'] >= 3.0):
             continue
-        if mode == 'strong':
-            if r['chg'] < 6.0 or r['zl'] <= 0:
-                continue
-        elif mode == 'potential':
-            if r['chg'] < 2.0 or r['chg'] >= 9.5 or r['zl'] <= 0:
-                continue
-        elif mode == 'trend':
-            if r['chg'] < 1.0 or r['zl'] <= 0:
-                continue
-        else:
-            raise SystemExit('mode: strong | trend | potential')
+        if not r['chg_ok']:
+            continue                            # 涨幅取不到 → 无法判口径
+        if r['zl'] is None:
+            no_zl += 1
+            r['zl'] = 0.0                       # 占位显示，不参与下面的资金过滤
+        elif r['zl'] <= 0:
+            continue
+        if mode == 'strong' and r['chg'] < 6.0:
+            continue
+        if mode == 'potential' and not (2.0 <= r['chg'] < 9.5):
+            continue
+        if mode == 'trend' and r['chg'] < 1.0:
+            continue
         r['shares'] = n100(r['price'], CASH)
         out.append(r)
+    if no_zl:
+        print(f'⚠️ 有 {no_zl} 只候选的主力净额字段取数失败（东财 f62 返回占位符 "-"），'
+              f'已**跳过资金过滤**保留在池中 —— 结果仅供观察，资金面须另行验证。')
     return out
 
 
@@ -88,8 +103,9 @@ def show(cands, title):
     print(f'\n=== {title}  {len(cands)} 只 ===')
     print(f"{'代码':<7}{'名称':<9}{'现价':>7}{'涨幅':>8}{'量比':>6}{'换手%':>7}{'主力亿':>8}{'可买':>6}  行业")
     for r in cands:
+        zl = f"{r['zl']:>+8.2f}" if r.get('zl_ok', True) else f"{'—':>8}"
         print(f"{r['code']:<7}{r['name']:<9}{r['price']:>7.2f}{r['chg']:>+7.2f}%"
-              f"{r['lb']:>6.1f}{r['hs']:>7.1f}{r['zl']:>+8.2f}{r['shares']:>6}  {r['blank']}")
+              f"{r['lb']:>6.1f}{r['hs']:>7.1f}{zl}{r['shares']:>6}  {r['blank']}")
 
 
 if __name__ == '__main__':
