@@ -69,8 +69,12 @@ def secid(code):
 
 
 def tsym(code):
-    """腾讯/新浪 symbol：sh/sz + code"""
+    """腾讯/新浪 symbol：sh/sz + code。
+    ⚠️ 已带 sh/sz/bj 前缀的原样返回（指数必须显式前缀：上证 sh000001，
+       不带前缀的 000001 会被判成深市 = 平安银行，这是历史踩过的坑）。"""
     c = str(code)
+    if c[:2] in ('sh', 'sz', 'bj'):
+        return c
     return ('sh' if c.startswith('6') else 'sz') + c
 
 
@@ -84,9 +88,10 @@ def n100(price, cash=None):
 
 # ---------------------------------------------------------------- 1. 实时快照（腾讯）
 def snapshot(codes, raw=False):
-    """腾讯实时快照。返回 {code: {name,price,chg,prev,open,high,low,vol,amount,hs,lb,outer,inner,limit_up,bids,asks,time}}
-    ⚠️ 按请求顺序对齐，勿用返回内代码做 key。"""
-    codes = [str(c).lstrip('shsz').replace('sh', '').replace('sz', '') for c in codes]
+    """腾讯实时快照。返回 {code: {name,price,chg,prev,open,high,low,vol,amount,hs,lb,outer,inner,limit_up,bids,asks,time,sealed}}
+    ⚠️ 按请求顺序对齐，勿用返回内代码做 key。
+    ⚠️ 显式 sh/sz/bj 前缀会保留（指数必须显式传 sh000001），无前缀的走自动判断。"""
+    codes = [str(c) if str(c)[:2] in ('sh', 'sz', 'bj') else str(c).lstrip('shsz') for c in codes]
     url = 'http://qt.gtimg.cn/q=' + ','.join(tsym(c) for c in codes)
     txt = get(url, enc='gbk', ref='https://gu.qq.com/')
     out = {}
@@ -111,7 +116,10 @@ def snapshot(codes, raw=False):
             'vol': int(_fl(f[6])), 'amount': _fl(f[37]), 'hs': _fl(f[38]), 'lb': _fl(f[49]),
             'outer': int(_fl(f[7])), 'inner': int(_fl(f[8])),
             'limit_up': lim, 'bids': bids, 'asks': asks, 'time': f[30],
-            'sealed': (asks and _fl(asks[0][0]) == lim and asks[0][1] == 0),   # 封死
+            # 封死 = 现价达涨停 + 卖盘五档全空 + 买一有量
+            # ⚠️ 原判据 (asks[0][0] == lim) 会漏判：封死时卖档价格字段返回 "0.00" 而非涨停价
+            'sealed': (prev > 0 and px >= lim - 1e-6 and bool(asks)
+                       and all(q == 0 for _, q in asks) and any(q > 0 for _, q in bids)),
         }
     return out
 
@@ -218,17 +226,81 @@ def sector_members(bk, fid='f3', pages=6):
                  fields='f12,f14,f2,f3,f62,f100')
 
 
-def sector_stats(bk):
+def _ok(v):
+    """字段是否为有效数值。
+    ⚠️ 东财 clist 在盘前（09:15 前）与限流时会把 f2/f3/f62 全返回 "-" 占位符，
+       而 _fl("-") == 0.0 —— 不校验就会被静默伪造成"全市场平盘、板块普跌 0%"，
+       进而让评分把"取数失败"当成"利空"扣分（这是最危险的一类 bug）。"""
+    if v is None:
+        return False
+    s = str(v).strip()
+    return s != '' and s != '-' and s.lower() != 'nan'
+
+
+def _snap_chg(codes, batch=60):
+    """腾讯批量快照取行情（东财 clist 行情字段失效时的降级源）。
+    返回 {code: {'chg':涨跌幅, 'price':现价}}；仅处理沪/深主板与创业板代码。
+    ⚠️ 盘前（09:15 前）腾讯/新浪只返回"今日未开盘"空壳：开=0、量=0、涨幅恒为 0。
+       这类快照无信息量，必须剔除，否则会把整块板块算成"全员 0.00%、红盘率 0%"。
+    """
+    out = {}
+    cl = [str(c) for c in codes if str(c)[:1] in '036']
+    for i in range(0, len(cl), batch):
+        try:
+            sp = snapshot(cl[i:i + batch])
+        except Exception:
+            continue
+        for k, v in sp.items():
+            if _fl(v.get('vol')) <= 0:
+                continue          # 盘前空壳 / 停牌：无昨收涨跌幅信息
+            if v.get('chg') is not None:
+                out[str(k)] = {'chg': v['chg'], 'price': v['price']}
+    return out
+
+
+def sector_stats(bk, fallback=True, pre=False):
     """板块统计：家数/红盘数/主力合计/涨幅中位数/涨停名单/个股绝对排名。
-    实现铁律 1（相对强度）+ 情绪温度。"""
+    实现铁律 1（相对强度）+ 情绪温度。
+    ⚠️ 东财 clist 盘前/限流时 f3 返回 "-"，此时自动降级用腾讯快照补行情
+       （成分代码名单仍来自东财，这部分一直是有效的）。
+    ⚠️ pre=True（本报告已回退到"上一交易日收盘"口径）时**强制禁用所有实时字段**：
+       否则会出现"个股用昨收、板块用今日竞价"的**口径混用**，相对强度直接算错。
+       返回 ok=False 表示本板块统计不可用，调用方必须按"中性、不加减分"处理。"""
+    if pre:
+        # 盘前/竞价口径下，唯一能给的只有"上一交易日各成分涨跌幅"，而那需要逐只拉 K 线
+        # （全量成分 × 多板块 = 数百次请求，不现实）。因此如实返回不可用，绝不伪造 0。
+        return {'n': 0, 'up': 0, 'zl_yi': None, 'median_chg': None, 'limit_up': [],
+                'rows': [], 'ok': False, 'src': 'pre', 'n_valid': 0}
+
     rows = sector_members(bk, pages=8)
-    chg = [_fl(x.get('f3')) for x in rows if x.get('f3') is not None]
-    zl = sum(_fl(x.get('f62')) for x in rows) / 1e8
+    if not rows:
+        return {'n': 0, 'up': 0, 'zl_yi': None, 'median_chg': None, 'limit_up': [],
+                'rows': [], 'ok': False, 'src': 'none', 'n_valid': 0}
+
+    valid = [] if pre else [x for x in rows if _ok(x.get('f3'))]
+    src = 'em'
+    chg_by = {}
+    if valid and len(valid) >= len(rows) * 0.5:
+        chg_by = {str(x.get('f12')): _fl(x.get('f3')) for x in valid}
+    elif fallback:
+        snaps = _snap_chg([x.get('f12') for x in rows])
+        chg_by = {k: v['chg'] for k, v in snaps.items()}
+        src = 'qq'
+
+    if not chg_by:
+        return {'n': len(rows), 'up': 0, 'zl_yi': None, 'median_chg': None,
+                'limit_up': [], 'rows': rows, 'ok': False, 'src': 'fail', 'n_valid': 0}
+
+    chg = list(chg_by.values())
+    zl_valid = [_fl(x.get('f62')) for x in rows if _ok(x.get('f62'))]
+    zl = (sum(zl_valid) / 1e8) if zl_valid else None
     chg_sorted = sorted(chg)
-    med = chg_sorted[len(chg_sorted) // 2] if chg_sorted else 0.0
-    lim = [(x.get('f12'), x.get('f14'), _fl(x.get('f3'))) for x in rows if _fl(x.get('f3')) >= 9.7]
+    med = chg_sorted[len(chg_sorted) // 2]
+    lim = [(x.get('f12'), x.get('f14'), chg_by.get(str(x.get('f12'))))
+           for x in rows if (chg_by.get(str(x.get('f12'))) or 0) >= 9.7]
     return {'n': len(rows), 'up': sum(1 for c in chg if c > 0), 'zl_yi': zl,
-            'median_chg': round(med, 2), 'limit_up': lim, 'rows': rows}
+            'median_chg': round(med, 2), 'limit_up': lim, 'rows': rows,
+            'ok': True, 'src': src, 'n_valid': len(chg_by), 'chg_by': chg_by}
 
 
 # ---------------------------------------------------------------- 6. K线三源
@@ -311,19 +383,28 @@ def kline(code, n=260):
 
 
 # ---------------------------------------------------------------- 7. 情绪温度
-def mood():
-    """情绪温度三指标之一：昨日涨停/首板/连板的板指涨跌 + 主力净额。"""
+def mood(pre=False):
+    """情绪温度三指标之一：昨日涨停/首板/连板的板指涨跌 + 主力净额。
+    ⚠️ 东财 clist 盘前/限流时 f3/f62 返回 "-"，此时 zl_yi 必须置 None（而非 0），
+       否则调用方会把"取数失败"误判成"资金净流入 → 接力环境健康"（把失败当利好，最危险的错法）。
+    ⚠️ pre=True 时禁用实时字段（口径须与个股一致：都用上一交易日收盘）。"""
     out = {}
     rows = clist(fid='f3', fs='m:90+t:3', pages=1, fields='f12,f14,f3,f62')
     idx = {str(x.get('f12')): x for x in rows}
     for name, bk in EMOTION_BK.items():
         x = idx.get(bk)
-        if not x:
-            # 用成分合计兜底
-            st = sector_stats(bk)
-            out[name] = {'chg': None, 'zl_yi': st['zl_yi'], 'up': st['up'], 'n': st['n']}
+        if x and _ok(x.get('f62')) and not pre:
+            out[name] = {'chg': _fl(x.get('f3')) if _ok(x.get('f3')) else None,
+                         'zl_yi': _fl(x.get('f62')) / 1e8, 'up': None, 'n': None}
         else:
-            out[name] = {'chg': _fl(x.get('f3')), 'zl_yi': _fl(x.get('f62')) / 1e8}
+            # 用成分合计兜底（成分名单仍来自东财，这部分有效）
+            try:
+                st = sector_stats(bk, pre=pre)
+            except Exception:
+                st = {'ok': False, 'zl_yi': None, 'up': 0, 'n': 0}
+            out[name] = {'chg': None,
+                         'zl_yi': st.get('zl_yi') if st.get('ok') else None,
+                         'up': st.get('up'), 'n': st.get('n')}
     return out
 
 
