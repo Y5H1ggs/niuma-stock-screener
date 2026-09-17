@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cfg
 import ds
-from ds import (_fl, snapshot, ulist, fflow, slist, sector_stats, kline_qq,
+from ds import (_fl, _ok, snapshot, ulist, fflow, slist, sector_stats, kline_qq,
                 indicators, kdj, mood, n100, allowed, tsym, get, MARKET_MAIN)
 
 # 板块属性桶（不是题材，参与"相对强度"会失真）
@@ -142,19 +142,28 @@ def score(d, notes):
                      [('资金流数据获取失败（ulist 限流），本维度<b>按中性 15/30 计</b>，不参与加减分', 0)]))
     else:
         sc = 15.0
-        if flow['zl'] > 0:
-            sc += 4; items.append((f"主力净流入 {money(flow['zl'])}", +4))
+        zl_ = flow.get('zl')
+        if zl_ is None:
+            items.append(('主力净额未取到，不参与计分', 0))
+        elif zl_ > 0:
+            sc += 4; items.append((f"主力净流入 {money(zl_)}", +4))
+        elif zl_ < 0:
+            sc -= 5; items.append((f"主力净流出 {money(abs(zl_))}", -5))
         else:
-            sc -= 5; items.append((f"主力净流出 {money(flow['zl'])}", -5))
-        np_ = flow.get('net_pct', 0) or 0
-        if np_ >= 30:
+            items.append(('主力净额为 0，无方向信息、不参与计分', 0))
+        np_ = flow.get('net_pct')
+        if np_ is None:
+            items.append(('主力净占比未取到，不参与计分', 0))
+        elif np_ >= 30:
             sc += 3; items.append((f'主力净占比 {np_:.2f}%，强势介入', +3))
         elif np_ >= 10:
             sc += 2; items.append((f'主力净占比 {np_:.2f}%，较强', +2))
         elif np_ > 0:
             sc += 1; items.append((f'主力净占比 {np_:.2f}%，仅属温和', +1))
-        else:
+        elif np_ < 0:
             sc -= 3; items.append((f'主力净占比 {np_:.2f}%，为负', -3))
+        else:
+            items.append(('主力净占比 0%，无方向信息、不参与计分', 0))
         fd = d.get('flow_days') or []
         if fd:
             neg = sum(1 for x in fd if _fl(x[1]) < 0)
@@ -168,11 +177,18 @@ def score(d, notes):
                 sc -= 1; items.append((f'近 {len(fd)} 日主力负值 {neg} 天，不够稳定', -1))
         else:
             items.append(('日线级资金流未取到，历史连续性未参与计分', 0))
-        if flow['xl'] > 0:
-            sc += 3; items.append((f"超大单净流入 {money(flow['xl'])}（机构级）", +3))
+        xl_ = flow.get('xl')
+        if xl_ is None:
+            items.append(('超大单数据未取到，不参与计分', 0))
+        elif xl_ > 0:
+            sc += 3; items.append((f"超大单净流入 {money(xl_)}（机构级）", +3))
+        elif xl_ < 0:
+            sc -= 3; items.append((f"超大单净流出 {money(abs(xl_))}", -3))
         else:
-            sc -= 3; items.append((f"超大单净流出 {money(flow['xl'])}", -3))
-        if s['outer'] > s['inner']:
+            items.append(('超大单净额为 0，无方向信息、不参与计分', 0))
+        if s.get('pre_open') or (s['outer'] == 0 and s['inner'] == 0):
+            items.append(('内外盘数据不可用（盘前快照），不参与计分', 0))
+        elif s['outer'] > s['inner']:
             sc += 2; items.append(('外盘 &gt; 内盘，主动买占优', +2))
         else:
             sc -= 2; items.append(('内盘 &gt; 外盘，主动卖占优', -2))
@@ -193,13 +209,17 @@ def score(d, notes):
             sc -= 2; items.append((f"跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -2))
         else:
             sc -= 5; items.append((f"显著跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -5))
-        zl = best['zl']
-        if zl >= 50:
+        zl = best.get('zl')
+        if zl is None:
+            items.append(('板块主力净额未取到（盘前/限流），不参与计分', 0))
+        elif zl >= 50:
             sc += 4; items.append((f'板块主力净流入 {zl:.1f} 亿，资金主战场', +4))
         elif zl > 0:
             sc += 2; items.append((f'板块主力净流入 {zl:.1f} 亿', +2))
+        elif zl < 0:
+            sc -= 3; items.append((f'板块主力净流出 {abs(zl):.1f} 亿', -3))
         else:
-            sc -= 3; items.append((f'板块主力净流出 {zl:.1f} 亿', -3))
+            items.append(('板块主力净额为 0，无方向信息、不参与计分', 0))
         ur = best['up'] / max(1, best['n']) * 100
         if ur >= 80:
             sc += 2; items.append((f'板块红盘率 {ur:.0f}%，普涨', +2))
@@ -221,13 +241,14 @@ def score(d, notes):
     items = []
     sc = 8.0
     m = d.get('mood') or {}
-    negs = [v for v in m.values() if (v.get('zl_yi') or 0) < 0]
-    if m and negs:
-        sc -= 4; items.append(('昨日涨停系"价强钱撤"（板指涨、主力净流出）', -4))
-    elif m:
-        sc += 4; items.append(('昨日涨停系资金净流入，接力环境健康', +4))
+    valid_m = [v for v in m.values() if v.get('zl_yi') is not None]
+    negs = [v for v in valid_m if v['zl_yi'] < 0]
+    if not valid_m:
+        items.append(('板块级资金数据未取到（盘前/限流），该项按中性计、不加减分', 0))
+    elif negs:
+        sc -= 4; items.append((f'昨日涨停系"价强钱撤"（{len(negs)}/{len(valid_m)} 个板指主力净流出）', -4))
     else:
-        items.append(('情绪数据未取到，本维度按中性 8/15 计', 0))
+        sc += 4; items.append(('昨日涨停系资金净流入，接力环境健康', +4))
     lad = d.get('ladder') or []
     n2 = sum(1 for x in lad if x[2] >= 2)
     if n2 >= 10:
@@ -307,23 +328,33 @@ def vwap(pts):
 
 
 def board_flows():
-    """全市场概念+行业板块的主力净额 {bk: (主力亿, 板指涨跌%)}。仅 2 次请求，用于挑出该股最强板块。"""
+    """全市场概念+行业板块的主力净额 {bk: (主力亿, 板指涨跌%)}。仅 2 次请求，用于挑出该股最强板块。
+    ⚠️ 东财 clist 盘前/限流时 f62 返回 "-"，此时**不入表**（而不是记 0）——
+       否则"板块主力 0 亿"会被当成"资金持平"参与打分，掩盖取数失败。"""
     out = {}
     for fs in ('m:90+t:3', 'm:90+t:2'):        # 概念 / 行业
         rows = ds.clist(fid='f62', fs=fs, pages=6, fields='f12,f14,f3,f62')
         for x in rows:
             bk = str(x.get('f12'))
-            if bk.startswith('BK'):
-                out[bk] = (_fl(x.get('f62')) / 1e8, _fl(x.get('f3')))
+            if not bk.startswith('BK'):
+                continue
+            if not _ok(x.get('f62')):
+                continue
+            out[bk] = (_fl(x.get('f62')) / 1e8, _fl(x.get('f3')) if _ok(x.get('f3')) else None)
     return out
 
 
-def ladder_scan(topn=80):
+def ladder_scan(topn=80, pre=False):
     """真实扫描今日涨停股的连板 streak（不用 BK1638，那会高估数倍）。
-    返回 (梯队列表, 取数失败数)。失败须在报告中标注，避免低估情绪高度。"""
+    返回 (梯队列表, 取数失败数, 是否可用)。
+    ⚠️ 盘前/限流/口径不符（pre=True）时东财 f3 不可依赖，此时必须显式返回「不可用」——
+       否则会伪造成"2 板及以上 0 只 → 情绪偏冷"，把取数失败当利空。"""
     today = datetime.date.today().strftime('%Y-%m-%d')
     rows = ds.clist(fid='f3', fs=MARKET_MAIN, pages=6, fields='f12,f14,f2,f3')
-    ups = [x for x in rows if _fl(x.get('f3')) >= 9.7][:topn]
+    valid = [] if pre else [x for x in rows if _ok(x.get('f3'))]
+    if not valid:
+        return [], 0, False
+    ups = [x for x in valid if _fl(x.get('f3')) >= 9.7][:topn]
     out, failed = [], 0
     for x in ups:
         code = str(x.get('f12'))
@@ -341,7 +372,7 @@ def ladder_scan(topn=80):
             streak += 1
         out.append((code, str(x.get('f14')), streak))
     out.sort(key=lambda t: -t[2])
-    return out, failed
+    return out, failed, True
 
 
 # ------------------------------------------------------------------ 数据汇总
@@ -363,35 +394,80 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
         raise SystemExit(f'{code} 快照获取失败')
     d['snap'] = s
 
-    idx = snapshot(['000001', '399001', '399006', '000688'])
+    # ---- 盘前修正（09:15 前 / 当日未开盘）----
+    # 腾讯在开盘前返回的是"今日未开盘"空壳：open=0、vol=0、chg=0.00、lb=0.00。
+    # 直接用会把涨跌幅/量比/成交额/技术指标全部算成 0（曾产出"+0.00% 量比0.00"的废报告）。
+    # 此时回退到【上一交易日收盘】作为分析基准，并在报告中显式声明。
+    d['pre_open'] = False
+    if _fl(s.get('vol')) <= 0 or _fl(s.get('open')) <= 0:
+        kp, _src0 = ds.kline(code, 6)
+        _today = datetime.date.today().strftime('%Y-%m-%d')
+        if kp and kp[-1]['d'] == _today and len(kp) >= 3:
+            kp = kp[:-1]
+        if len(kp) >= 2:
+            last, prev = kp[-1], kp[-2]
+            s['price'], s['prev'] = last['c'], prev['c']
+            s['open'], s['high'], s['low'] = last['o'], last['h'], last['l']
+            s['vol'] = last['v']
+            s['chg'] = (last['c'] / prev['c'] - 1) * 100 if prev['c'] else 0.0
+            s['limit_up'] = round(prev['c'] * 1.1, 2)
+            s['sealed'] = last['c'] >= s['limit_up'] - 1e-6
+            s['time'] = last['d'].replace('-', '') + '150000'
+            s['hs'] = float('nan')
+            s['lb'] = float('nan')
+            s['amount'] = float('nan')
+            s['outer'] = s['inner'] = 0
+            s['bids'] = s['asks'] = []
+            s['pre_open'] = True
+            d['pre_open'] = True
+            d['prev_date'] = last['d']
+
+    # 指数必须带显式前缀：裸 000001 会被判成深市 = 平安银行（曾把上证指数显示成 11.70）
+    idx = snapshot(['sh000001', 'sz399001', 'sz399006', 'sh000688'])
     d['index'] = idx
 
-    # 板块：用"板块主力净额"排序挑出该股真正资金最猛的板块，而不是 slist 的原始顺序
-    mine = [x for x in slist(code) if x['name'] not in BUCKET]
-    bf = board_flows()
-    mine.sort(key=lambda t: -bf.get(t['bk'], (0.0, 0.0))[0])
-    d['sectors'] = []
+    # 板块：先取 slist 相关度前若干，再按"板块主力净额（可用时）/ 板块涨幅中位数"挑出
+    # 该股真正走强的那几个板块，而不是 slist 的原始顺序（原始第一个常是"学历教育 2 只"这类噪音）
+    mine = [x for x in slist(code) if x['name'] not in BUCKET][:8]
+    bf = {} if d['pre_open'] else board_flows()
+    cand = []
     for x in mine:
-        if len(d['sectors']) >= sector_top:
-            break
-        st = sector_stats(x['bk'])
-        if st['n'] < 5:
+        st = sector_stats(x['bk'], pre=d['pre_open'])
+        if not st.get('ok') or st['n'] < 5:
             continue
-        d['sectors'].append({'bk': x['bk'], 'name': x['name'], 'n': st['n'], 'up': st['up'],
-                             'zl': st['zl_yi'], 'med': st['median_chg'], 'limit_up': st['limit_up'],
-                             'board_zl': bf.get(x['bk'], (None, None))[0]})
-    for sd in d['sectors']:
-        rows = ds.sector_members(sd['bk'], pages=8)
-        rk = sorted(rows, key=lambda z: -_fl(z.get('f3')))
-        sd['rank'] = next((i + 1 for i, z in enumerate(rk) if str(z.get('f12')) == str(code)), None)
-        sd['rel'] = round(s['chg'] - sd['med'], 2)
+        cand.append((x, st))
+
+    def _skey(t):
+        x_, st_ = t
+        z = bf.get(x_['bk'], (None, None))[0]
+        return -(z if z is not None else (st_['median_chg'] if st_['median_chg'] is not None else 0))
+
+    cand.sort(key=_skey)
+    d['sectors'] = []
+    d['sector_ok'] = bool(cand)
+    for x, st in cand[:sector_top]:
+        cb = st.get('chg_by') or {}
+        rk = sorted(cb.items(), key=lambda z: -z[1])
+        rank = next((i + 1 for i, z in enumerate(rk) if str(z[0]) == str(code)), None)
+        med = st['median_chg']
+        d['sectors'].append({
+            'bk': x['bk'], 'name': x['name'], 'n': st['n'], 'up': st['up'],
+            'zl': st['zl_yi'], 'med': med, 'limit_up': st['limit_up'],
+            'board_zl': bf.get(x['bk'], (None, None))[0],
+            'rank': rank, 'rank_n': len(cb) or None,
+            'rel': (round(s['chg'] - med, 2) if med is not None else None),
+            'src': st.get('src'),
+        })
 
     ul = ulist([code]).get(str(code), {})
-    d['flow_ok'] = bool(ul)
+    d['flow_ok'] = bool(ul) and _ok(ul.get('f62'))
     d['flow'] = {
-        'zl': _fl(ul.get('f62')), 'net_pct': _fl(ul.get('f184')),
-        'xl': _fl(ul.get('f66')), 'dl': _fl(ul.get('f72')),
-        'zl2': _fl(ul.get('f78')), 'xl2': _fl(ul.get('f84')),
+        'zl': _fl(ul.get('f62')) if _ok(ul.get('f62')) else None,
+        'net_pct': _fl(ul.get('f184')) if _ok(ul.get('f184')) else None,
+        'xl': _fl(ul.get('f66')) if _ok(ul.get('f66')) else None,
+        'dl': _fl(ul.get('f72')) if _ok(ul.get('f72')) else None,
+        'zl2': _fl(ul.get('f78')) if _ok(ul.get('f78')) else None,
+        'xl2': _fl(ul.get('f84')) if _ok(ul.get('f84')) else None,
     }
     d['flow_days'] = fflow(code, klt=101, lmt=12)
 
@@ -438,15 +514,15 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
             d['bt_err'] = f'{type(e).__name__}: {str(e)[:80]}'
 
     try:
-        d['mood'] = mood()
+        d['mood'] = mood(pre=d['pre_open'])
     except Exception:
         d['mood'] = {}
 
     if do_ladder:
         try:
-            d['ladder'], d['ladder_failed'] = ladder_scan()
+            d['ladder'], d['ladder_failed'], d['ladder_ok'] = ladder_scan(pre=d['pre_open'])
         except Exception:
-            d['ladder'], d['ladder_failed'] = [], 0
+            d['ladder'], d['ladder_failed'], d['ladder_ok'] = [], 0, False
 
     return d
 
@@ -473,11 +549,11 @@ def auto_judge(d):
     if ind.get('macd') and ind['macd']['dif'] > ind['macd']['dea']:
         pb.append(f"MACD 零轴{'上方' if ind['macd']['dif'] > 0 else '下方'}金叉"
                   f"（DIF {ind['macd']['dif']:.3f} &gt; DEA {ind['macd']['dea']:.3f}）")
-    if flow['zl'] > 0:
+    if flow.get('zl') is not None and flow['zl'] > 0:
         signs = [('+' if _fl(x[1]) > 0 else '−') for x in d.get('flow_days', [])]
-        pb.append(f"主力今日净流入 <b>{money(flow['zl'])}</b>（超大单 {money(flow['xl'])} / "
-                  f"大单 {money(flow['dl'])}），近 {len(signs)} 日符号 {' '.join(signs)}")
-    if s['outer'] > s['inner']:
+        pb.append(f"主力今日净流入 <b>{money(flow['zl'])}</b>（超大单 {money(flow.get('xl') or 0)} / "
+                  f"大单 {money(flow.get('dl') or 0)}），近 {len(signs)} 日符号 {' '.join(signs)}")
+    if not s.get('pre_open') and s['outer'] > s['inner']:
         tot = s['outer'] + s['inner']
         pb.append(f"外盘 {s['outer'] / 1e4:.1f} 万 &gt; 内盘 {s['inner'] / 1e4:.1f} 万，"
                   f"主动买占 {s['outer'] / tot * 100:.1f}%")
@@ -497,8 +573,10 @@ def auto_judge(d):
         tag = '温和' if flow['net_pct'] < 10 else ('较强' if flow['net_pct'] < 30 else '强势')
         nb.append(f"主力净占比 <b>{flow['net_pct']:.2f}%</b>（{tag}）"
                   + ('' if flow['net_pct'] >= 10 else '，够不上"大资金强力介入"'))
-    if flow['zl'] <= 0:
-        nb.append(f"主力<b>净流出 {money(flow['zl'])}</b>，资金在离场")
+    if flow.get('zl') is not None and flow['zl'] < 0:
+        nb.append(f"主力<b>净流出 {money(abs(flow['zl']))}</b>，资金在离场")
+    elif flow.get('zl') is None:
+        nb.append('主力资金数据<b>未取到</b>（盘前/限流）——该项<b>不作为利空</b>，需盘中复核')
     return pb, nb
 
 
@@ -753,7 +831,25 @@ def build(d, notes):
     code, name = d['code'], s['name']
     title = notes.get('title') or '深度分析'
     date_s = datetime.date.today().strftime('%Y-%m-%d')
-    hm = s['time'][8:10] + ':' + s['time'][10:12] if len(s['time']) >= 12 else s['time']
+    # 数据时点必须来自快照自身的时间戳（14 位 YYYYMMDDHHMMSS），
+    # ⚠️ 用 today() 会把"昨日收盘快照"标成今天的盘中，这是曾出现过的严重误导。
+    _raw = str(s.get('time') or '')
+    if len(_raw) >= 12:
+        snap_date = f'{_raw[0:4]}-{_raw[4:6]}-{_raw[6:8]}'
+        hm = f'{_raw[8:10]}:{_raw[10:12]}'
+    else:
+        snap_date, hm = date_s, _raw
+    # 交易时段描述：盘前取到的快照其实是【上一交易日收盘】，不能标成"盘中"
+    if snap_date != date_s:
+        sess = '上一交易日收盘'
+    elif hm < '09:15':
+        sess = '盘前'
+    elif hm < '09:30':
+        sess = '集合竞价'
+    elif hm <= '15:00':
+        sess = '盘中'
+    else:
+        sess = '收盘'
     ind = d.get('ind', {})
     pb, nb = auto_judge(d)
     for x in (notes.get('bull') or []):
@@ -781,7 +877,7 @@ def build(d, notes):
 <div class="mast">
   <div>
     <h1>{esc(name)}<span class="code">{code}</span><span class="kind">{esc(title)}</span></h1>
-    <div class="tagline">数据时点 <b>{date_s} {hm}</b>（盘中）　·　
+    <div class="tagline">数据时点 <b>{snap_date} {hm}</b>（{sess}）　·　
 {'沪市' if str(code).startswith('6') else '深市'}　·　
 {esc(notes.get('subtitle') or '实时数据 + 板块横向对比 + 历史形态回测')}</div>
   </div>
@@ -800,35 +896,49 @@ def build(d, notes):
         A(C('合规提示', esc(d['warn_allowed']), 'warn'))
 
     # ===== 一、数据速览 =====
+    _pre = bool(s.get('pre_open'))
+    _day = '上一交易日' if _pre else '今日'
+
+    def _n(v, unit='', dec=2, sign=False):
+        """安全数值格式化：None / nan / 非数值 → —（盘前快照的换手/量比/成交额无值）"""
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return '—'
+        if f != f:            # nan
+            return '—'
+        return (f'{f:+.{dec}f}' if sign else f'{f:.{dec}f}') + unit
+
     ibits = []
-    for k_, lbl in (('000001', '上证'), ('399001', '深成'), ('399006', '创业板'), ('000688', '科创50')):
+    for k_, lbl in (('sh000001', '上证'), ('sz399001', '深成'), ('sz399006', '创业板'), ('sh000688', '科创50')):
         x = d['index'].get(k_)
         if x:
             ibits.append(f"{lbl} {x['price']:.2f} <b class=\"{cls(x['chg'])}\">{pct(x['chg'])}</b>")
     kp = f'''<div class="kpi">
   <div><div class="l">现价 / 涨幅</div><div class="v {cls(s['chg'])}">{s['price']} {pct(s['chg'])}</div></div>
-  <div><div class="l">今日最高</div><div class="v {cls(s['high'] - s['prev'])}">{s['high']}{'（涨停）' if abs(s['high'] - s['limit_up']) < 0.011 else ''}</div></div>
+  <div><div class="l">{_day}最高</div><div class="v {cls(s['high'] - s['prev'])}">{s['high']}{'（涨停）' if abs(s['high'] - s['limit_up']) < 0.011 else ''}</div></div>
   <div><div class="l">自最高回落</div><div class="v dn">{d.get('from_high', 0):.1f}%</div></div>
-  <div><div class="l">量比</div><div class="v">{s['lb']:.2f}</div></div>
+  <div><div class="l">量比</div><div class="v">{_n(s.get('lb'))}</div></div>
 </div>'''
     if d.get('flow_ok', True):
         flowrow = (f'<tr><td>主力净额 / 净占比</td>'
                    f'<td class="num {cls(d["flow"]["zl"])}">{money(d["flow"]["zl"])} / '
-                   f'{(d["flow"].get("net_pct") or 0):.2f}%</td>'
+                   f'{_n(d["flow"].get("net_pct")) }%</td>'
                    f'<td>&lt;10% 温和 · 30%+ 强势</td></tr>')
     else:
         flowrow = ('<tr><td>主力净额 / 净占比</td><td class="num">—</td>'
-                   '<td><b>取数失败（ulist 限流）</b>，评级中该维度按中性计</td></tr>')
+                   '<td><b>未取到</b>（盘前/限流），评级中该维度<b>按中性计、不计负分</b></td></tr>')
+    _blank = '<td class="num">—</td><td>盘前快照无此项（开盘后才有）</td>'
     tbl = f'''<table class="kv">
 <tr><th>项目</th><th>数值</th><th>判读</th></tr>
 <tr><td>开盘 / 最高 / 最低</td><td>{s['open']} / <b>{s['high']}</b> / {s['low']}</td><td>{'低开' if s['open'] < s['prev'] else '高开'} {(s['open'] / s['prev'] - 1) * 100:+.1f}%{('，' + d['touch_at'][:2] + ':' + d['touch_at'][2:] + ' 触板') if d.get('touch_at') else ''}</td></tr>
-<tr><td>昨日收盘 / 涨停价</td><td>{s['prev']} / {s['limit_up']}</td><td>{'已封死' if s.get('sealed') else '未封板'}</td></tr>
-<tr><td>成交量 / 成交额</td><td>{s['vol'] / 1e4:.1f} 万手 / {s['amount'] / 1e4:.2f} 亿</td><td>为 20 日均量的 <b>{d.get('vr20', 0):.2f} 倍</b></td></tr>
-<tr><td>换手率</td><td>{s['hs']:.2f}%</td><td>{'活跃' if s['hs'] > 3 else '一般'}</td></tr>
-<tr><td>量比</td><td><b>{s['lb']:.2f}</b></td><td class="{'dn' if s['lb'] < 2 else 'up'}">{'量能未有效放大' if s['lb'] < 2 else '量能有效'}</td></tr>
-<tr><td>日内均价 VWAP</td><td><b>{d.get('vwap', float('nan')):.3f}</b></td><td class="{cls(s['price'] - d.get('vwap', 0))}">现价 {s['price']} {'低于' if s['price'] < d.get('vwap', 0) else '高于'}均价</td></tr>
-<tr><td>主动买卖</td><td>外盘 {s['outer'] / 1e4:.1f} 万 {'&gt;' if s['outer'] > s['inner'] else '&lt;'} 内盘 {s['inner'] / 1e4:.1f} 万</td><td>主动买占 {(s['outer'] / max(1, s['outer'] + s['inner'])) * 100:.1f}%</td></tr>
-<tr><td>买1 / 卖1 挂单</td><td class="num">{s['bids'][0][1] if s['bids'] else 0} / {s['asks'][0][1] if s['asks'] else 0} 手</td><td>{'近端承接薄' if s['bids'] and s['bids'][0][1] < 500 else '近端承接正常'}</td></tr>
+<tr><td>前收盘 / 涨停价</td><td>{s['prev']} / {s['limit_up']}</td><td>{'已封死' if s.get('sealed') else ('未封板' if not _pre else '上一交易日未封板')}</td></tr>
+<tr><td>成交量 / 成交额</td><td>{s['vol'] / 1e4:.1f} 万手 / {_n(s.get('amount'), ' 亿', 2) if not _pre else '—'}</td><td>为 20 日均量的 <b>{d.get('vr20', 0):.2f} 倍</b></td></tr>
+<tr><td>换手率</td><td>{_n(s.get('hs'), '%')}</td><td>{'—' if _pre else ('活跃' if s['hs'] > 3 else '一般')}</td></tr>
+<tr><td>量比</td><td><b>{_n(s.get('lb'))}</b></td><td>{'—' if _pre else ('量能未有效放大' if s['lb'] < 2 else '量能有效')}</td></tr>
+<tr><td>日内均价 VWAP</td><td><b>{_n(d.get('vwap'), '', 3)}</b></td><td>{'盘前无分时数据，不可用' if _pre else f"现价 {s['price']} {'低于' if s['price'] < d.get('vwap', 0) else '高于'}均价"}</td></tr>
+<tr><td>主动买卖</td>{_blank if _pre else f"<td>外盘 {s['outer'] / 1e4:.1f} 万 {'&gt;' if s['outer'] > s['inner'] else '&lt;'} 内盘 {s['inner'] / 1e4:.1f} 万</td><td>主动买占 {(s['outer'] / max(1, s['outer'] + s['inner'])) * 100:.1f}%</td>"}</tr>
+<tr><td>买1 / 卖1 挂单</td>{_blank if _pre else f"<td class='num'>{s['bids'][0][1] if s['bids'] else 0} / {s['asks'][0][1] if s['asks'] else 0} 手</td><td>{'近端承接薄' if s['bids'] and s['bids'][0][1] < 500 else '近端承接正常'}</td>"}</tr>
 {flowrow}
 <tr><td>大盘（{hm}）</td><td>{'　|　'.join(ibits)}</td><td>—</td></tr>
 <tr><td>资金占用</td><td><b>{n100(s['price'], d['cash'])} 股 = {n100(s['price'], d['cash']) * s['price']:.0f} 元</b>（config 资金 {d['cash']:.0f}）</td><td>双边费用约 {n100(s['price'], d['cash']) * s['price'] * d['fee']:.0f} 元，需涨 {d['fee'] * 100:.2f}% 才回本</td></tr>
@@ -836,7 +946,7 @@ def build(d, notes):
     A(C('一、数据速览',
         SC('核心盘口', kp, cnt=f'{hm} 快照')
         + SC('明细（价格 / 量能 / 盘口 / 资金 / 大盘 / 资金占用）', tbl),
-        badge=f"{hm} 盘中"))
+        badge=f"{hm} {sess}"))
 
     # ===== 分时形态 =====
     if d.get('minutes'):
@@ -856,13 +966,17 @@ def build(d, notes):
 
     # ===== 二、板块横向对比 =====
     if d['sectors']:
+        def _fmt(v, unit, dec=2):
+            """板块表数值格式化：None 显示 —（盘前/限流时板块主力净额取不到）。"""
+            return '—' if v is None else f'{v:+.{dec}f}{unit}'
+
         rows = ''.join(
             f"<tr><td><b>{esc(x['name'])}</b> <span class='tiny'>{x['bk']}</span></td>"
             f"<td>{x['n']}</td><td>{x['up']}</td>"
-            f"<td class='num {cls(x['zl'])}'>{x['zl']:+.2f} 亿</td>"
-            f"<td class='num'>{x['med']:+.2f}%</td>"
+            f"<td class='num {cls(x['zl'])}'>{_fmt(x['zl'], ' 亿')}</td>"
+            f"<td class='num'>{_fmt(x['med'], '%')}</td>"
             f"<td class='num {cls(s['chg'])}'>{s['chg']:+.2f}%</td>"
-            f"<td class='num {cls(x.get('rel') or 0)}'>{x.get('rel'):+.2f}pp</td>"
+            f"<td class='num {cls(x.get('rel') or 0)}'>{_fmt(x.get('rel'), 'pp')}</td>"
             f"<td>{x.get('rank') or '—'}/{x['n']}</td></tr>"
             for x in d['sectors'])
         lead = [x for x in d['sectors'] if x.get('rel') is not None]
@@ -877,7 +991,7 @@ def build(d, notes):
             concl = SC(
                 '主线板块相对强度',
                 f"<p style='margin:2px 0'>{esc(name)} 报 <b>{s['chg']:+.2f}%</b>，"
-                f"主线板块 <b>{esc(b['name'])}</b>（主力 {b['zl']:+.2f} 亿）全量中位数 "
+                f"主线板块 <b>{esc(b['name'])}</b>（主力 {_fmt(b['zl'], ' 亿')}）全量中位数 "
                 f"<b>{b['med']:+.2f}%</b>，{reltxt}，"
                 f"绝对排名 <b>{b.get('rank')}/{b['n']}</b>。</p>")
         lu = []
@@ -907,7 +1021,16 @@ def build(d, notes):
         tone = 'warn' if (lead and lead[0]['rel'] < 0) else ('ok' if lead else '')
         A(C('二、板块横向对比', body, tone, badge='铁律第一条'))
     else:
-        A(C('二、板块横向对比', '<p>未取到板块数据（slist/clist 接口异常）。</p>', 'warn'))
+        A(C('二、板块横向对比', SC(
+            '⚠️ 本次板块行情不可用 —— 不是"板块普跌"',
+            '<p>当前时段行情源<b>不提供个股涨跌幅</b>：腾讯/新浪快照在开盘前只返回'
+            '"今日未开盘"空壳（开=0、量=0、涨幅恒为 0），东财 clist 的 f2/f3/f62 '
+            '返回占位符 <code>-</code>。因此<b>板块内相对强度（成分涨幅中位数）本次无法计算</b>，'
+            '板块面已按中性计、未加减分。</p>'
+            '<p class="tiny">🔴 关键提醒：若无此校验，程序会输出"板块红盘率 0%、'
+            '中位数 +0.00%、普跌 −3 分"——那是<b>取数失败的假象</b>，会真实地把评级打低。'
+            '开盘后（09:30+）重跑即可拿到真实板块数据。</p>',
+            tone='warn', cnt='数据不可用'), 'gray'))
 
     # ===== 三、多空研判 =====
     body = (SC('✅ 支持的一方', '<ul>' + ''.join(f'<li>{x}</li>' for x in pb) + '</ul>',
@@ -1040,19 +1163,32 @@ def build(d, notes):
     # ===== 七、情绪温度 =====
     body = ''
     if d.get('mood'):
+        mv = [v for v in d['mood'].values() if v.get('zl_yi') is not None]
         t = ('<table><tr><th>情绪指标</th><th>板指涨跌</th><th>主力净额</th></tr>')
         for nm, v in d['mood'].items():
+            zl_ = v.get('zl_yi')
             t += (f"<tr><td>{esc(nm)}</td><td class='{cls(v.get('chg'))}'>"
                   f"{(pct(v['chg']) if v.get('chg') is not None else '—')}</td>"
-                  f"<td class='num {cls(v.get('zl_yi'))}'>{v.get('zl_yi', 0):+.2f} 亿</td></tr>")
+                  f"<td class='num {cls(zl_)}'>"
+                  f"{(f'{zl_:+.2f} 亿' if zl_ is not None else '— 未取到')}</td></tr>")
         t += '</table>'
-        negs = [v for v in d['mood'].values() if (v.get('zl_yi') or 0) < 0]
-        if negs:
-            t += ('<p><b>"价强钱撤"</b>：板指在涨但主力净额为负——抬价的是中小资金，'
-                  '大资金在借强势离场。此环境对接力型交易不友好。</p>')
-        body += SC('昨日涨停系资金', t, tone=('warn' if negs else 'ok'),
-                   cnt=('价强钱撤' if negs else '资金净流入'))
-    if d.get('ladder') is not None and d.get('ladder'):
+        if not mv:
+            t += ('<p class="tiny">⚠️ 板块级主力净额未取到（盘前/限流），'
+                  '"价强钱撤"判定<b>不可用</b>，情绪面已按中性计、未加减分。</p>')
+            body += SC('昨日涨停系资金', t, cnt='数据不可用')
+        else:
+            negs = [v for v in mv if v['zl_yi'] < 0]
+            if negs:
+                t += ('<p><b>"价强钱撤"</b>：板指在涨但主力净额为负——抬价的是中小资金，'
+                      '大资金在借强势离场。此环境对接力型交易不友好。</p>')
+            body += SC('昨日涨停系资金', t, tone=('warn' if negs else 'ok'),
+                       cnt=('价强钱撤' if negs else '资金净流入'))
+    if d.get('ladder_ok') is False:
+        body += SC('连板梯队（真实扫描 streak）',
+                   '<p>⚠️ 全市场涨幅字段未取到（盘前/限流），连板梯队<b>本次不可用</b>，'
+                   '情绪面已按中性计、未据此加减分。<b>不要把它读成"情绪偏冷 0 只"</b>。</p>',
+                   cnt='数据不可用')
+    elif d.get('ladder'):
         n2 = sum(1 for x in d['ladder'] if x[2] >= 2)
         top = max((x[2] for x in d['ladder']), default=0)
         fail = d.get('ladder_failed', 0)
@@ -1071,8 +1207,10 @@ def build(d, notes):
 
     # ===== 八、风险提示 =====
     ul = []
-    ul.append(f'所有数据为 <b>{hm} 盘中快照</b>，收盘前价格、量比、主力净额、均线、技术指标'
-              f'全部会变；均线与指标按"实时价拼入历史序列"计算，<b>必须以收盘数据复核</b>。')
+    ul.append(f'所有数据为 <b>{snap_date} {hm}（{sess}）</b>快照，'
+              f'{"盘前取到的行情即上一交易日收盘值，" if sess == "上一交易日收盘" else ""}'
+              f'价格、量比、主力净额、均线、技术指标全部会变；'
+              f'均线与指标按"实时价拼入历史序列"计算，<b>必须以收盘数据复核</b>。')
     if d.get('bt') and hit:
         ul.append(f'回测样本量有限（本次主形态 N={hit["n"]}）'
                   + ('' if hit['n'] >= 10 else '，且 N&lt;10 属<b>样本不足、不可外推</b>')
@@ -1148,8 +1286,12 @@ def main():
                do_bt=not a.no_bt, do_ladder=not a.no_ladder)
     s = d['snap']
     sc = score(d, notes)
-    print(f'      {s["name"]} {s["price"]} {s["chg"]:+.2f}%  量比{s["lb"]:.2f}  '
-          f'板块{len(d["sectors"])}个  回测形态{len(d.get("bt") or [])}个  连板{len(d.get("ladder") or [])}只')
+    _lb = s.get('lb')
+    _lbt = '—' if (_lb is None or _lb != _lb) else f'{_lb:.2f}'
+    print(f'      {s["name"]} {s["price"]} {s["chg"]:+.2f}%  量比{_lbt}  '
+          f'{"[盘前·用上一交易日收盘]" if d.get("pre_open") else ""}'
+          f'板块{len(d["sectors"])}个  回测形态{len(d.get("bt") or [])}个  '
+          f'连板{len(d.get("ladder") or [])}只')
     print(f'      评级 {sc["rating"]} {sc["total"]}/100  '
           + ' '.join(f'{n}{g:.0f}/{m}' for n, g, m, _ in sc['dims']))
 
