@@ -24,3 +24,5 @@ Thumbs.db
 _out_*.txt
 pool.json
 pool_deep.json
+scripts/pool.json
+scripts/pool_deep.json
