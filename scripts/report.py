@@ -58,6 +58,28 @@ RATING_TIERS = [
 ]
 
 
+def pick_sectors(d):
+    """板块基准选取（P34）。
+
+    返回 (best, peer)：
+      best —— 板块资金/涨幅最热的相关板块，代表"今天这个方向的钱有多少"；
+      peer —— **成分数最少**的板块 = 最贴近主业的细分同业，作为**相对强度主判据**。
+
+    为什么必须分开：采集时板块按资金规模降序排，排第一的必然是"电子""半导体"
+    这类成分数百只的大盘块。大板块中位数天然偏低（含大量弱势股），个股只要不跌
+    就算"跑赢" —— 拿它当基准会系统性高估相对强度，与铁律 1/3 的意图正好相反。
+    实证：600360 华微电子 09-18 拿"电子 BK1201"（522 只，中位 +1.59%）当基准得
+    +0.02pp"领先"，而其细分同业"分立器件 BK1327"（18 只，中位 +2.33%）它跑输 0.72pp。
+    """
+    lead = [x for x in (d.get('sectors') or []) if x.get('rel') is not None]
+    if not lead:
+        return None, None
+    best = lead[0]
+    pool = [x for x in lead if x.get('n')]
+    peer = min(pool, key=lambda x: x['n']) if pool else best
+    return best, peer
+
+
 def score(d, notes):
     """100 分制机械打分 → 券商式评级。四维：技术30 / 资金30 / 板块25 / 情绪15。
 
@@ -204,45 +226,74 @@ def score(d, notes):
                 items.append((f'内外盘基本均衡（差 {gap:+.1f}%），无方向信息、不参与计分', 0))
         dims.append(('资金面', max(0, min(30, sc)), 30, items))
 
-    # ---------------- 板块面 25（基准 12，加分项合计 13）
+    # ---------------- 板块面 25（基准 12 + 个股级 13；板块级加分受相对强度闸门约束）
     items = []
     sc = 12.0
-    lead = [x for x in d['sectors'] if x.get('rel') is not None]
-    if lead:
-        best = lead[0]
-        rel = best['rel']
+    best, peer = pick_sectors(d)
+    if best:
+        # ★ 相对强度主判据 = **细分同业**（成分数最少的板块），不是资金最热的那个大盘块（P34）：
+        #   采集按资金规模排序，排第一的必然是"电子""半导体"这类数百只成分的大盘块，
+        #   其涨幅中位数天然偏低（含大量弱势股），个股只要不跌就算"跑赢" ——
+        #   用它当基准会系统性高估相对强度，与铁律 1/3 的意图正好相反。
+        ref = peer or best
+        rel = ref['rel']
+
+        # ★ 板块级加分闸门（2026-09-18 新增，P33）：
+        #   「板块主力净额」「板块红盘率」是**板块级**指标，与该股无关。板块一强，
+        #   连一只明显被落下的票也能白拿这 3~7 分 —— 与铁律 1/3 直接矛盾：
+        #   资金没流到它身上时，板块走强对它反而是负面信号（说明钱选了别的票）。
+        #   → 个股跑输同业中位数时，板块级**正分归零**（负分照扣）。
+        peel = rel < 0
+
+        def _blk(txt, v, peel=peel):
+            """板块级加减分：个股跑输同业时，正分归零（负分保留）。"""
+            if peel and v > 0:
+                return (txt + '（个股跑输同业中位数 → 该板块级加分归零）', 0)
+            return (txt, v)
+
+        ptxt = f"细分同业 {ref['name']}（{ref['n']} 只）"
         if rel >= 1:
-            sc += 6; items.append((f"领先主线板块 {best['name']} 中位数 {rel:.2f}pp", +6))
+            sc += 6; items.append((f"领先{ptxt}中位数 {rel:.2f}pp", +6))
         elif rel >= 0:
-            sc += 4; items.append((f"略领先主线板块 {best['name']} 中位数 {rel:.2f}pp", +4))
+            sc += 4; items.append((f"略领先{ptxt}中位数 {rel:.2f}pp", +4))
         elif rel >= -1:
-            sc -= 3; items.append((f"跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -3))
+            sc -= 3; items.append((f"跑输{ptxt}中位数 {abs(rel):.2f}pp", -3))
         elif rel >= -2:
-            sc -= 6; items.append((f"显著跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp", -6))
+            sc -= 6; items.append((f"显著跑输{ptxt}中位数 {abs(rel):.2f}pp", -6))
         else:
             # ★ 铁律 1/3 的量化落点：板块整体走强（或至少不弱）而个股大幅落后，
             #   说明资金在同一个方向里选了别的票 —— 这是 T+1 模式最该躲开的形态，
             #   不论均线多漂亮。故给最重的一档扣分。
-            sc -= 10; items.append((f"严重跑输主线板块 {best['name']} 中位数 {abs(rel):.2f}pp"
+            sc -= 10; items.append((f"严重跑输{ptxt}中位数 {abs(rel):.2f}pp"
                                     f"（资金在同方向内选择了其他标的，脱离板块式走弱）", -10))
+        # ★ 泛板块与同业背离 = 跟风位（P34）：只在宽口径里"领先"、同业里跑输，
+        #   说明它被大板块的中位数平均效应救了，实际没拿到同业的资金。
+        if (peer is not None and best is not peer
+                and best.get('rel') is not None and best['rel'] > 0 >= rel
+                and (best['rel'] - rel) >= 1.0):
+            sc -= 3; items.append(
+                (f"泛板块 {best['name']}（{best['n']} 只）领先 {best['rel']:+.2f}pp，"
+                 f"但{ptxt}跑输 {abs(rel):.2f}pp —— 仅靠宽口径中位数「沾光」，属跟风位", -3))
         zl = best.get('zl')
         if zl is None:
             items.append(('板块主力净额未取到（盘前/限流），不参与计分', 0))
         elif zl >= 50:
-            sc += 4; items.append((f'板块主力净流入 {zl:.1f} 亿，资金主战场', +4))
+            t, v = _blk(f'主线方向 {best["name"]} 主力净流入 {zl:.1f} 亿，资金主战场', 4)
+            sc += v; items.append((t, v))
         elif zl > 0:
-            sc += 2; items.append((f'板块主力净流入 {zl:.1f} 亿', +2))
+            t, v = _blk(f'主线方向 {best["name"]} 主力净流入 {zl:.1f} 亿', 2)
+            sc += v; items.append((t, v))
         elif zl < 0:
-            sc -= 3; items.append((f'板块主力净流出 {abs(zl):.1f} 亿', -3))
+            sc -= 3; items.append((f'主线方向 {best["name"]} 主力净流出 {abs(zl):.1f} 亿', -3))
         else:
             items.append(('板块主力净额为 0，无方向信息、不参与计分', 0))
-        ur = best['up'] / max(1, best['n']) * 100
+        ur = ref['up'] / max(1, ref['n']) * 100
         if ur >= 80:
-            sc += 2; items.append((f'板块红盘率 {ur:.0f}%，普涨', +2))
+            t, v = _blk(f'{ptxt}红盘率 {ur:.0f}%，普涨', 2); sc += v; items.append((t, v))
         elif ur >= 50:
-            sc += 1; items.append((f'板块红盘率 {ur:.0f}%', +1))
+            t, v = _blk(f'{ptxt}红盘率 {ur:.0f}%', 1); sc += v; items.append((t, v))
         else:
-            sc -= 3; items.append((f'板块红盘率仅 {ur:.0f}%，普跌', -3))
+            sc -= 3; items.append((f'{ptxt}红盘率仅 {ur:.0f}%，普跌', -3))
         inlim = any(str(c) == str(d['code']) for x in d['sectors'] for c, _, _ in x['limit_up'])
         if inlim:
             sc += 1; items.append(('在板块涨停／准涨停名单内（资金接力类型包含它）', +1))
@@ -483,9 +534,17 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
         return -(z if z is not None else (st_['median_chg'] if st_['median_chg'] is not None else 0))
 
     cand.sort(key=_skey)
+    # ★ P34：同业基准板块（成分数最少 = 最贴近主业）必须进入样本。采集按资金规模排序，
+    #   排前面的必然是大盘块；若同业板块被 sector_top 截掉，相对强度就只能拿大盘块当基准。
+    pool = cand[:sector_top]
+    n_pool = [t for t in cand if t[1].get('n')]
+    d['peer_bk'] = (min(n_pool, key=lambda t: t[1]['n'])[0]['bk'] if n_pool else None)
+    if d['peer_bk'] and d['peer_bk'] not in [t[0]['bk'] for t in pool]:
+        tail = [t for t in cand if t[0]['bk'] == d['peer_bk']]
+        pool = (pool[:max(1, sector_top - 1)] + tail) if len(pool) >= sector_top else (pool + tail)
     d['sectors'] = []
     d['sector_ok'] = bool(cand)
-    for x, st in cand[:sector_top]:
+    for x, st in pool:
         cb = st.get('chg_by') or {}
         rk = sorted(cb.items(), key=lambda z: -z[1])
         rank = next((i + 1 for i, z in enumerate(rk) if str(z[0]) == str(code)), None)
@@ -497,6 +556,7 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
             'rank': rank, 'rank_n': len(cb) or None,
             'rel': (round(s['chg'] - med, 2) if med is not None else None),
             'src': st.get('src'),
+            'peer': (x['bk'] == d['peer_bk']),
         })
 
     ul = ulist([code]).get(str(code), {})
@@ -571,16 +631,24 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
 def auto_judge(d):
     s, ind, flow = d['snap'], d.get('ind', {}), d['flow']
     pb, nb = [], []
-    lead = [x for x in d['sectors'] if x.get('rel') is not None]
-    if lead:
-        best = lead[0]
-        if best['rel'] < 0:
-            nb.append(f"<b>跑输 {esc(best['name'])}（主线板块）中位数 {abs(best['rel'])} 个百分点</b>"
-                      f"（{s['chg']:+.2f}% vs 中位 {best['med']:+.2f}%）——铁律第一条警示")
+    best, peer = pick_sectors(d)
+    if best:
+        # 相对强度以**细分同业**为准（P34），宽口径仅作对照
+        ref = peer or best
+        rt = f"细分同业 {esc(ref['name'])}（{ref['n']} 只）"
+        if ref['rel'] < 0:
+            nb.append(f"<b>跑输{rt}中位数 {abs(ref['rel'])} 个百分点</b>"
+                      f"（{s['chg']:+.2f}% vs 中位 {ref['med']:+.2f}%，排名 "
+                      f"{ref.get('rank')}/{ref['n']}）——铁律第一条警示")
         else:
-            pb.append(f"在主线板块 <b>{esc(best['name'])}</b> 内领先中位数 <b>{best['rel']} 个百分点</b>"
-                      f"（{s['chg']:+.2f}% vs 中位 {best['med']:+.2f}%），排名 "
-                      f"{best.get('rank')}/{best['n']}")
+            pb.append(f"在{rt}内领先中位数 <b>{ref['rel']} 个百分点</b>"
+                      f"（{s['chg']:+.2f}% vs 中位 {ref['med']:+.2f}%），排名 "
+                      f"{ref.get('rank')}/{ref['n']}")
+        if (peer is not None and best is not peer and best.get('rel') is not None
+                and best['rel'] > 0 >= ref['rel']):
+            nb.append(f"宽口径 <b>{esc(best['name'])}</b>（{best['n']} 只）看似领先 "
+                      f"{best['rel']:+.2f}pp，但细分同业跑输 —— 属<b>跟风位</b>"
+                      f"（被大板块的中位数平均效应掩盖）")
     if s['limit_up'] and abs(s['high'] - s['limit_up']) < 0.011:
         pb.append('今日<b>触及涨停</b>——这是有资金真实进攻过的硬证据')
     if ind.get('bull'):
@@ -785,6 +853,10 @@ CSS = """
         background:#FBFAF7;font-size:11.5px;color:var(--muted);line-height:1.95;}
   .hi{background:#FBF3DE;padding:1px 5px;border-radius:4px;}
   .mark{background:#FFF8E4;}
+  tr.peertr td{background:#FBF7EC;}
+  .peertag{display:inline-block;margin-left:6px;padding:0 6px;border-radius:20px;
+           background:#F0E4C8;color:#7A5A1B;font-size:10.5px;font-weight:600;
+           vertical-align:1px;}
   .tiny{font-size:12px;color:var(--muted);line-height:1.85;}
   code{background:#F2F0EA;border-radius:4px;padding:1px 5px;font-size:12px;
        font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
@@ -1026,30 +1098,42 @@ def build(d, notes):
             """板块表数值格式化：None 显示 —（盘前/限流时板块主力净额取不到）。"""
             return '—' if v is None else f'{v:+.{dec}f}{unit}'
 
-        rows = ''.join(
-            f"<tr><td><b>{esc(x['name'])}</b> <span class='tiny'>{x['bk']}</span></td>"
-            f"<td>{x['n']}</td><td>{x['up']}</td>"
-            f"<td class='num {cls(x['zl'])}'>{_fmt(x['zl'], ' 亿')}</td>"
-            f"<td class='num'>{_fmt(x['med'], '%')}</td>"
-            f"<td class='num {cls(s['chg'])}'>{s['chg']:+.2f}%</td>"
-            f"<td class='num {cls(x.get('rel') or 0)}'>{_fmt(x.get('rel'), 'pp')}</td>"
-            f"<td>{x.get('rank') or '—'}/{x['n']}</td></tr>"
-            for x in d['sectors'])
-        lead = [x for x in d['sectors'] if x.get('rel') is not None]
+        def _row(x):
+            tag = ' class=peertr' if x.get('peer') else ''
+            pt = ' <span class=peertag>同业基准</span>' if x.get('peer') else ''
+            return (f"<tr{tag}><td><b>{esc(x['name'])}</b>"
+                    f" <span class='tiny'>{x['bk']}</span>{pt}</td>"
+                    f"<td>{x['n']}</td><td>{x['up']}</td>"
+                    f"<td class='num {cls(x['zl'])}'>{_fmt(x['zl'], ' 亿')}</td>"
+                    f"<td class='num'>{_fmt(x['med'], '%')}</td>"
+                    f"<td class='num {cls(s['chg'])}'>{s['chg']:+.2f}%</td>"
+                    f"<td class='num {cls(x.get('rel') or 0)}'>{_fmt(x.get('rel'), 'pp')}</td>"
+                    f"<td>{x.get('rank') or '—'}/{x['n']}</td></tr>")
+
+        rows = ''.join(_row(x) for x in d['sectors'])
+        best, peer = pick_sectors(d)
         concl = ''
-        if lead:
-            b = lead[0]
-            rel = b['rel']
+        if best:
+            ref = peer or best
+            rel = ref['rel']
             if rel < 0:
                 reltxt = f'<span class="hi">跑输 {abs(rel):.2f} 个百分点</span>'
             else:
                 reltxt = f'领先 {rel:.2f} 个百分点'
             concl = SC(
-                '主线板块相对强度',
+                '相对强度（以细分同业为基准）',
                 f"<p style='margin:2px 0'>{esc(name)} 报 <b>{s['chg']:+.2f}%</b>，"
-                f"主线板块 <b>{esc(b['name'])}</b>（主力 {_fmt(b['zl'], ' 亿')}）全量中位数 "
-                f"<b>{b['med']:+.2f}%</b>，{reltxt}，"
-                f"绝对排名 <b>{b.get('rank')}/{b['n']}</b>。</p>")
+                f"细分同业 <b>{esc(ref['name'])}</b>（{ref['n']} 只成分，"
+                f"主力 {_fmt(ref['zl'], ' 亿')}）全量中位数 "
+                f"<b>{ref['med']:+.2f}%</b>，{reltxt}，"
+                f"绝对排名 <b>{ref.get('rank')}/{ref['n']}</b>。</p>"
+                + (f"<p class='tiny'>⚠️ 采集按板块资金规模排序，居首的常是成分数百只的大盘块"
+                   f"（本次为 <b>{esc(best['name'])}</b> {best['n']} 只）。大板块含大量弱势股、"
+                   f"涨幅中位数天然偏低，<b>不能</b>用来判断「资金是否选了它」；"
+                   f"故相对强度一律以<b>成分数最少的同业板块</b>为基准。"
+                   f"宽口径下它{'领先' if (best.get('rel') or 0) >= 0 else '跑输'} "
+                   f"{abs(best.get('rel') or 0):.2f}pp（排名 {best.get('rank')}/{best['n']}），"
+                   f"仅作方向参考。</p>" if peer is not None and best is not peer else ''))
         lu = []
         for x in d['sectors']:
             for c, nm, ch in x['limit_up']:
@@ -1074,7 +1158,8 @@ def build(d, notes):
                    f'其"中位数"≈全市场 90 分位，会系统性把中游票误判为弱势票。</p>',
                    cnt=f'共 {len(d["sectors"])} 个相关板块')
                 + concl + sub)
-        tone = 'warn' if (lead and lead[0]['rel'] < 0) else ('ok' if lead else '')
+        tone = ('warn' if (peer and peer['rel'] is not None and peer['rel'] < 0)
+                else ('ok' if peer else ''))
         A(C('二、板块横向对比', body, tone, badge='铁律第一条'))
     else:
         A(C('二、板块横向对比', SC(
