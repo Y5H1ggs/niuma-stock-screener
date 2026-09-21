@@ -59,25 +59,36 @@ RATING_TIERS = [
 
 
 def pick_sectors(d):
-    """板块基准选取（P34）。
+    """板块基准选取（P34 → P35 修订，2026-09-21）。
 
     返回 (best, peer)：
-      best —— 板块资金/涨幅最热的相关板块，代表"今天这个方向的钱有多少"；
-      peer —— **成分数最少**的板块 = 最贴近主业的细分同业，作为**相对强度主判据**。
+      best —— 相关板块里**板块级主力净额最大**者，用于展示"今天这个方向的钱有多少"；
+      peer —— **相对强度主判据**：取「行业基准」与「题材基准」中相对强度**更低（更不利）**的一个。
 
-    为什么必须分开：采集时板块按资金规模降序排，排第一的必然是"电子""半导体"
-    这类成分数百只的大盘块。大板块中位数天然偏低（含大量弱势股），个股只要不跌
-    就算"跑赢" —— 拿它当基准会系统性高估相对强度，与铁律 1/3 的意图正好相反。
-    实证：600360 华微电子 09-18 拿"电子 BK1201"（522 只，中位 +1.59%）当基准得
-    +0.02pp"领先"，而其细分同业"分立器件 BK1327"（18 只，中位 +2.33%）它跑输 0.72pp。
+    为什么要"取更不利者"（P35）：
+      这两个基准都**不可挑选** —— 行业＝东财口径、每票恰一个；题材＝所属概念里资金最大者、
+      规则固定为"取最大"。但它们仍可能给出相反结论，此时**绝不允许挑有利的那个**：
+      取更不利的一侧，正是对"用算法给自己挑最有利解释"这个错误的直接修复。
+      实证：600519 标的乙，行业基准（电力 112 只）+0.23pp vs 题材基准 −0.49pp；
+            旧口径挑中"光伏发电 13 只"得 +0.53pp 排 3/13，真实同业"碳化硅 47 只"为 −1.18pp 排 35/47。
+
+    回退链：两个基准都不可用 → 退回"成分数最少的板块"（旧 P34 逻辑）→ 再退回第一个板块。
+    ⚠️ 副作用：会向 d 写入 basis_divergence（两个基准方向矛盾时为 True），供评级与判读标注。
     """
-    lead = [x for x in (d.get('sectors') or []) if x.get('rel') is not None]
-    if not lead:
+    secs = [x for x in (d.get('sectors') or []) if x.get('rel') is not None]
+    if not secs:
         return None, None
-    best = lead[0]
-    pool = [x for x in lead if x.get('n')]
-    peer = min(pool, key=lambda x: x['n']) if pool else best
-    return best, peer
+    rich = [x for x in secs if x.get('board_zl') is not None]
+    best = max(rich, key=lambda x: x['board_zl']) if rich else secs[0]
+    based = [x for x in secs if x.get('basis')]
+    if based:
+        peer = min(based, key=lambda x: x['rel'])
+        if len(based) >= 2:
+            rels = [x['rel'] for x in based]
+            d['basis_divergence'] = (min(rels) < 0 < max(rels))
+        return best, peer
+    pool = [x for x in secs if x.get('n')]
+    return best, (min(pool, key=lambda x: x['n']) if pool else best)
 
 
 def score(d, notes):
@@ -231,12 +242,14 @@ def score(d, notes):
     sc = 12.0
     best, peer = pick_sectors(d)
     if best:
-        # ★ 相对强度主判据 = **细分同业**（成分数最少的板块），不是资金最热的那个大盘块（P34）：
-        #   采集按资金规模排序，排第一的必然是"电子""半导体"这类数百只成分的大盘块，
-        #   其涨幅中位数天然偏低（含大量弱势股），个股只要不跌就算"跑赢" ——
-        #   用它当基准会系统性高估相对强度，与铁律 1/3 的意图正好相反。
+        # ★ 相对强度主判据（P35，2026-09-21）=「行业基准」与「题材基准」中**更不利**的那个
+        #   （见 pick_sectors）。不再"挑最热"或"挑最细" —— 挑的动作本身就能挑出最有利的解释：
+        #   同一只票挑中"光伏发电 13 只"得 +0.53pp、挑中"碳化硅 47 只"得 −1.18pp。
         ref = peer or best
         rel = ref['rel']
+        rb = ref.get('basis')
+        ptxt = (f"{rb}基准 {ref['name']}（{ref['n']} 只）" if rb
+                else f"基准板块 {ref['name']}（{ref['n']} 只）")
 
         # ★ 板块级加分闸门（2026-09-18 新增，P33）：
         #   「板块主力净额」「板块红盘率」是**板块级**指标，与该股无关。板块一强，
@@ -246,12 +259,11 @@ def score(d, notes):
         peel = rel < 0
 
         def _blk(txt, v, peel=peel):
-            """板块级加减分：个股跑输同业时，正分归零（负分保留）。"""
+            """板块级加减分：个股跑输基准时，正分归零（负分保留）。"""
             if peel and v > 0:
-                return (txt + '（个股跑输同业中位数 → 该板块级加分归零）', 0)
+                return (txt + '（个股跑输基准中位数 → 该板块级加分归零）', 0)
             return (txt, v)
 
-        ptxt = f"细分同业 {ref['name']}（{ref['n']} 只）"
         if rel >= 1:
             sc += 6; items.append((f"领先{ptxt}中位数 {rel:.2f}pp", +6))
         elif rel >= 0:
@@ -266,15 +278,26 @@ def score(d, notes):
             #   不论均线多漂亮。故给最重的一档扣分。
             sc -= 10; items.append((f"严重跑输{ptxt}中位数 {abs(rel):.2f}pp"
                                     f"（资金在同方向内选择了其他标的，脱离板块式走弱）", -10))
-        # ★ 泛板块与同业背离 = 跟风位（P34）：只在宽口径里"领先"、同业里跑输，
-        #   说明它被大板块的中位数平均效应救了，实际没拿到同业的资金。
-        if (peer is not None and best is not peer
-                and best.get('rel') is not None and best['rel'] > 0 >= rel
-                and (best['rel'] - rel) >= 1.0):
+        # ★ 基准分歧（P35）：两个**不可挑选**的基准给出相反结论时，必须显式标注，
+        #   并说明本次按更不利者计分 —— 否则读者会以为"它领先"，实际只是选了有利的基准。
+        if d.get('basis_divergence'):
+            other = next((x for x in d['sectors']
+                          if x.get('basis') and x['bk'] != ref['bk']
+                          and x.get('rel') is not None), None)
+            if other:
+                items.append((f"基准分歧：{other['basis']}基准 {other['name']} 为 "
+                              f"{other['rel']:+.2f}pp，本次按更不利者（{rb or '基准'}）计分，"
+                              f"不作有利解释", 0))
+        elif (peer is not None and best is not peer and best.get('rel') is not None
+                and best['rel'] > 0 >= rel and (best['rel'] - rel) >= 1.0):
+            # ★ 跟风位：只在资金最热的那个板块里"领先"、基准里跑输，
+            #   说明它被大板块的中位数平均效应救了，实际没拿到同方向的资金。
             sc -= 3; items.append(
-                (f"泛板块 {best['name']}（{best['n']} 只）领先 {best['rel']:+.2f}pp，"
+                (f"最热板块 {best['name']}（{best['n']} 只）领先 {best['rel']:+.2f}pp，"
                  f"但{ptxt}跑输 {abs(rel):.2f}pp —— 仅靠宽口径中位数「沾光」，属跟风位", -3))
-        zl = best.get('zl')
+        zl = best.get('board_zl')
+        if zl is None:
+            zl = best.get('zl')
         if zl is None:
             items.append(('板块主力净额未取到（盘前/限流），不参与计分', 0))
         elif zl >= 50:
@@ -419,19 +442,14 @@ def vwap(pts):
 
 
 def board_flows():
-    """全市场概念+行业板块的主力净额 {bk: (主力亿, 板指涨跌%)}。仅 2 次请求，用于挑出该股最强板块。
+    """全市场概念+行业板块的主力净额 {bk: (主力亿, 板指涨跌%)}。数据取自 ds.board_index()（进程内缓存）。
     ⚠️ 东财 clist 盘前/限流时 f62 返回 "-"，此时**不入表**（而不是记 0）——
        否则"板块主力 0 亿"会被当成"资金持平"参与打分，掩盖取数失败。"""
     out = {}
-    for fs in ('m:90+t:3', 'm:90+t:2'):        # 概念 / 行业
-        rows = ds.clist(fid='f62', fs=fs, pages=6, fields='f12,f14,f3,f62')
-        for x in rows:
-            bk = str(x.get('f12'))
-            if not bk.startswith('BK'):
-                continue
-            if not _ok(x.get('f62')):
-                continue
-            out[bk] = (_fl(x.get('f62')) / 1e8, _fl(x.get('f3')) if _ok(x.get('f3')) else None)
+    for bk, (nm, kind, zl, chg) in (ds.board_index().get('by_bk') or {}).items():
+        if zl is None:
+            continue
+        out[bk] = (zl, chg)
     return out
 
 
@@ -517,16 +535,55 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
     idx = snapshot(['sh000001', 'sz399001', 'sz399006', 'sh000688'])
     d['index'] = idx
 
-    # 板块：先取 slist 相关度前若干，再按"板块主力净额（可用时）/ 板块涨幅中位数"挑出
-    # 该股真正走强的那几个板块，而不是 slist 的原始顺序（原始第一个常是"学历教育 2 只"这类噪音）
-    mine = [x for x in slist(code) if x['name'] not in BUCKET][:8]
+    # ---- 板块基准（P35，2026-09-21 重做）----
+    # 旧做法：拉 slist 前 8 个板块 → 按资金挑"最热"当方向、按成分数挑"最少"当同业。
+    # 问题：**任何"挑"的动作都可能挑出对自己最有利的解释**。同一只票的板块相对强度
+    #   因挑中"光伏发电 13 只"得 +0.53pp（排 3/13），因挑中"碳化硅 47 只"得 −1.18pp（排 35/47）
+    #   —— 结论完全相反（600519 标的乙实测）。
+    # 新做法：只用两个**不可挑选**的基准：
+    #   ① 行业基准 = 东财 f127 所属行业（交易所口径，每票恰一个，不是我们选的）；
+    #   ② 题材基准 = 该股所属概念里**今日主力净额最大**者（规则固定为"取最大"，
+    #      而不是"取对个股最有利的"）。
+    #   两者矛盾时不得只报有利的那个，见 pick_sectors() 的"取更不利者"。
+    prof = ds.stock_profile(code)
+    d['profile'] = prof
+    bidx = ds.board_index().get('by_name') or {}
+    ibk = (bidx.get(prof['industry'])[0] if prof.get('industry') in bidx else None)
+    tbk, tzl = None, None
+    for cn in (prof.get('concepts') or []):
+        rec = bidx.get(cn)
+        if not rec or rec[1] != '概念' or rec[2] is None:
+            continue
+        if tzl is None or rec[2] > tzl:
+            tbk, tzl = rec[0], rec[2]
+    d['ind_bk'], d['theme_bk'], d['theme_zl'] = ibk, tbk, tzl
+    # G9：板块对比前先核对主业 —— 主营构成（按产品）决定"这是业绩票还是题材票"
+    d['mainbiz'] = ds.main_business(code)
+
+    # 其余板块：slist 相关度前若干，按"板块主力净额 / 涨幅中位数"排序，补充方向视野
+    mine = [x for x in slist(code) if x['name'] not in BUCKET]
     bf = {} if d['pre_open'] else board_flows()
-    cand = []
+    cand, seen_bk = [], set()
     for x in mine:
+        if x['bk'] in seen_bk:
+            continue
         st = sector_stats(x['bk'], pre=d['pre_open'])
         if not st.get('ok') or st['n'] < 5:
             continue
-        cand.append((x, st))
+        seen_bk.add(x['bk'])
+        cand.append(({'bk': x['bk'], 'name': x['name']}, st))
+    # ★ 两个基准板块**必须**进样本：即使 slist 没返回它、或 sector_top 会截掉它
+    for bk, basis in ((ibk, '行业'), (tbk, '题材')):
+        if not bk or bk in seen_bk:
+            continue
+        nm = (ds.board_index()['by_bk'].get(bk) or ('?',))[0]
+        st = sector_stats(bk, pre=d['pre_open'])
+        if not st.get('ok') or st['n'] < 5:
+            continue
+        seen_bk.add(bk)
+        cand.append(({'bk': bk, 'name': nm}, st))
+    for x_, _st in cand:                    # 打基准标记
+        x_['basis'] = '行业' if x_['bk'] == ibk else ('题材' if x_['bk'] == tbk else None)
 
     def _skey(t):
         x_, st_ = t
@@ -534,14 +591,12 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
         return -(z if z is not None else (st_['median_chg'] if st_['median_chg'] is not None else 0))
 
     cand.sort(key=_skey)
-    # ★ P34：同业基准板块（成分数最少 = 最贴近主业）必须进入样本。采集按资金规模排序，
-    #   排前面的必然是大盘块；若同业板块被 sector_top 截掉，相对强度就只能拿大盘块当基准。
-    pool = cand[:sector_top]
+    # 基准优先占位（表格里一眼可见），其余按热度补足到 sector_top
+    basis_logs = [t for t in cand if t[0]['basis']]
+    others = [t for t in cand if not t[0]['basis']][:max(0, sector_top - len(basis_logs))]
+    pool = basis_logs + others
     n_pool = [t for t in cand if t[1].get('n')]
     d['peer_bk'] = (min(n_pool, key=lambda t: t[1]['n'])[0]['bk'] if n_pool else None)
-    if d['peer_bk'] and d['peer_bk'] not in [t[0]['bk'] for t in pool]:
-        tail = [t for t in cand if t[0]['bk'] == d['peer_bk']]
-        pool = (pool[:max(1, sector_top - 1)] + tail) if len(pool) >= sector_top else (pool + tail)
     d['sectors'] = []
     d['sector_ok'] = bool(cand)
     for x, st in pool:
@@ -557,6 +612,7 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
             'rel': (round(s['chg'] - med, 2) if med is not None else None),
             'src': st.get('src'),
             'peer': (x['bk'] == d['peer_bk']),
+            'basis': x.get('basis'),
         })
 
     ul = ulist([code]).get(str(code), {})
@@ -633,9 +689,11 @@ def auto_judge(d):
     pb, nb = [], []
     best, peer = pick_sectors(d)
     if best:
-        # 相对强度以**细分同业**为准（P34），宽口径仅作对照
+        # 相对强度以「行业基准 / 题材基准」中**更不利**者为判据（P35），并印出两者
         ref = peer or best
-        rt = f"细分同业 {esc(ref['name'])}（{ref['n']} 只）"
+        rb = ref.get('basis')
+        rt = (f"{rb}基准 {esc(ref['name'])}（{ref['n']} 只）" if rb
+              else f"基准板块 {esc(ref['name'])}（{ref['n']} 只）")
         if ref['rel'] < 0:
             nb.append(f"<b>跑输{rt}中位数 {abs(ref['rel'])} 个百分点</b>"
                       f"（{s['chg']:+.2f}% vs 中位 {ref['med']:+.2f}%，排名 "
@@ -644,10 +702,16 @@ def auto_judge(d):
             pb.append(f"在{rt}内领先中位数 <b>{ref['rel']} 个百分点</b>"
                       f"（{s['chg']:+.2f}% vs 中位 {ref['med']:+.2f}%），排名 "
                       f"{ref.get('rank')}/{ref['n']}")
-        if (peer is not None and best is not peer and best.get('rel') is not None
-                and best['rel'] > 0 >= ref['rel']):
-            nb.append(f"宽口径 <b>{esc(best['name'])}</b>（{best['n']} 只）看似领先 "
-                      f"{best['rel']:+.2f}pp，但细分同业跑输 —— 属<b>跟风位</b>"
+        other = next((x for x in d['sectors']
+                      if x.get('basis') and x['bk'] != ref['bk']
+                      and x.get('rel') is not None), None)
+        if other:
+            nb.append(f"<b>基准分歧</b>：{other['basis']}基准 <b>{esc(other['name'])}</b>"
+                      f"（{other['n']} 只）为 {other['rel']:+.2f}pp，与上述结论方向相反；"
+                      f"本次一律按<b>更不利者</b>计分，不挑有利解释")
+        elif (best is not peer and best.get('rel') is not None and best['rel'] > 0 >= ref['rel']):
+            nb.append(f"资金最热的 <b>{esc(best['name'])}</b>（{best['n']} 只）看似领先 "
+                      f"{best['rel']:+.2f}pp，但基准板块跑输 —— 属<b>跟风位</b>"
                       f"（被大板块的中位数平均效应掩盖）")
     if s['limit_up'] and abs(s['high'] - s['limit_up']) < 0.011:
         pb.append('今日<b>触及涨停</b>——这是有资金真实进攻过的硬证据')
@@ -1100,7 +1164,8 @@ def build(d, notes):
 
         def _row(x):
             tag = ' class=peertr' if x.get('peer') else ''
-            pt = ' <span class=peertag>同业基准</span>' if x.get('peer') else ''
+            b = x.get('basis')
+            pt = (f' <span class=peertag>{b}基准</span>' if b else '')
             return (f"<tr{tag}><td><b>{esc(x['name'])}</b>"
                     f" <span class='tiny'>{x['bk']}</span>{pt}</td>"
                     f"<td>{x['n']}</td><td>{x['up']}</td>"
@@ -1116,24 +1181,28 @@ def build(d, notes):
         if best:
             ref = peer or best
             rel = ref['rel']
-            if rel < 0:
-                reltxt = f'<span class="hi">跑输 {abs(rel):.2f} 个百分点</span>'
-            else:
-                reltxt = f'领先 {rel:.2f} 个百分点'
+            rb = ref.get('basis')
+            rlab = f'{rb}基准' if rb else '基准板块'
+            reltxt = (f'<span class="hi">跑输 {abs(rel):.2f} 个百分点</span>' if rel < 0
+                      else f'领先 {rel:.2f} 个百分点')
+            bases = [x for x in d['sectors'] if x.get('basis') and x.get('rel') is not None]
+            blist = '、'.join(f"{x['basis']}基准 {esc(x['name'])}（{x['n']} 只）"
+                              f"{x['rel']:+.2f}pp" for x in bases) or '—'
+            brel = best.get('rel') if best.get('rel') is not None else 0
             concl = SC(
-                '相对强度（以细分同业为基准）',
-                f"<p style='margin:2px 0'>{esc(name)} 报 <b>{s['chg']:+.2f}%</b>，"
-                f"细分同业 <b>{esc(ref['name'])}</b>（{ref['n']} 只成分，"
-                f"主力 {_fmt(ref['zl'], ' 亿')}）全量中位数 "
-                f"<b>{ref['med']:+.2f}%</b>，{reltxt}，"
+                '相对强度（行业／题材双基准，取更不利者）',
+                f"<p style='margin:2px 0'>{esc(name)} 报 <b>{s['chg']:+.2f}%</b>；"
+                f"两个基准分别为 {blist}。主判据取<b>更不利</b>的 "
+                f"<b>{esc(ref['name'])}</b>（{rlab}，{ref['n']} 只成分），"
+                f"全量中位数 <b>{ref['med']:+.2f}%</b>，{reltxt}，"
                 f"绝对排名 <b>{ref.get('rank')}/{ref['n']}</b>。</p>"
-                + (f"<p class='tiny'>⚠️ 采集按板块资金规模排序，居首的常是成分数百只的大盘块"
-                   f"（本次为 <b>{esc(best['name'])}</b> {best['n']} 只）。大板块含大量弱势股、"
-                   f"涨幅中位数天然偏低，<b>不能</b>用来判断「资金是否选了它」；"
-                   f"故相对强度一律以<b>成分数最少的同业板块</b>为基准。"
-                   f"宽口径下它{'领先' if (best.get('rel') or 0) >= 0 else '跑输'} "
-                   f"{abs(best.get('rel') or 0):.2f}pp（排名 {best.get('rank')}/{best['n']}），"
-                   f"仅作方向参考。</p>" if peer is not None and best is not peer else ''))
+                + ("<p class='tiny'>⚠️ <b>基准分歧</b>：两个基准方向相反，本次一律按更不利者计分"
+                   " —— 绝不允许挑对自己最有利的那个板块当分母（P35）。</p>"
+                   if d.get('basis_divergence') else '')
+                + (f"<p class='tiny'>⚠️ 基准<b>不参与挑选</b>：行业取东财口径（每票恰一个），"
+                   f"题材取所属概念里今日主力净额最大者，二者都由规则固定，不由分析者挑。"
+                   f"资金最热的相关板块为 <b>{esc(best['name'])}</b>（{best['n']} 只，"
+                   f"{brel:+.2f}pp），仅作方向参考，不作为相对强度分母。</p>"))
         lu = []
         for x in d['sectors']:
             for c, nm, ch in x['limit_up']:
@@ -1158,6 +1227,30 @@ def build(d, notes):
                    f'其"中位数"≈全市场 90 分位，会系统性把中游票误判为弱势票。</p>',
                    cnt=f'共 {len(d["sectors"])} 个相关板块')
                 + concl + sub)
+        # ★ G9：主营构成校验 —— 板块对比之前先确认"它靠什么赚钱"
+        #   否则会拿一个与主业无关的板块当基准（标的甲主营 81% 教育，却拿"通信技术"比）。
+        mb = d.get('mainbiz') or {}
+        mprod = mb.get('by_product') or []
+        if mprod:
+            brows = ''.join(f"<tr><td>{esc(nm)}</td><td class='num'>"
+                            f"{(f'{r:.2f}%' if r is not None else '—')}</td></tr>"
+                            for nm, r in mprod[:5])
+            bnames = '、'.join(f"{x['basis']}基准 <b>{esc(x['name'])}</b>"
+                               for x in d['sectors'] if x.get('basis')) or '—'
+            top = mprod[0]
+            same = any((x['name'] in top[0]) or (top[0] in x['name'])
+                       or (x['name'][:2] in top[0])
+                       for x in d['sectors'] if x.get('basis'))
+            warn = ('' if (same or top[1] is None or top[1] < 50) else
+                    f"<p class='tiny'>⚠️ <b>题材与主业可能不同源</b>：第 1 大主营是 "
+                    f"<b>{esc(top[0])}</b>（{top[1]:.2f}%），而本次板块基准为 {bnames} —— "
+                    f"股价驱动可能来自<b>题材标签</b>而非主营，业绩支撑与估值锚须分开看（G9）。</p>")
+            body += SC(
+                f"主营构成（按产品 · {mb.get('date') or '最新报告期'}）",
+                f"<table><tr><th>主营项目</th><th>收入占比</th></tr>{brows}</table>"
+                f"<p class='tiny'>本次板块基准：{bnames}。"
+                f"主营构成＝业绩与估值锚；板块基准＝资金流向。二者不同源时，涨的是情绪不是业绩。</p>"
+                + warn)
         tone = ('warn' if (peer and peer['rel'] is not None and peer['rel'] < 0)
                 else ('ok' if peer else ''))
         A(C('二、板块横向对比', body, tone, badge='铁律第一条'))

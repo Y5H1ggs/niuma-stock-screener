@@ -150,7 +150,18 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
         except Exception:
             break
         time.sleep(0.25)
-    return rows
+    # ★ G8 去重（2026-09-21）：东财分页在**实时排序**（fid=f3/f62，po=1 按值降序）下页间会重叠
+    #   —— 同一只票可能同时出现在 pn=2 与 pn=3（实测 600479/600933/002687/603020 各出现两次）。
+    #   不去重会让候选池虚增、同一票重复占据注意力，还会让"筛出 N 只"这类统计失真。
+    #   按代码保留首次出现顺序（列表本身有序，去重不得打乱排序语义）。
+    seen, uniq = set(), []
+    for x in rows:
+        k = str(x.get('f12'))
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(x)
+    return uniq
 
 
 # ---------------------------------------------------------------- 3. 个股资金（东财 ulist.np）
@@ -224,6 +235,130 @@ def sector_members(bk, fid='f3', pages=6):
     """板块成分（分页取全量，避免"只取前100名导致误报排名"）。"""
     return clist(fid=fid, fs=f'b:{bk}', pages=pages,
                  fields='f12,f14,f2,f3,f62,f100')
+
+
+def stock_profile(code):
+    """东财**客观分类**：行业名(f127) + 概念名列表(f129) + 地域(f128) + 板块名(f128)。
+
+    ⚠️ 为什么要用它（2026-09-21 新增，P35）：
+      此前板块基准靠「拉该股所属板块 → 按资金排序 → 挑最热 / 按成分数挑最细」，
+      任何"挑"的动作都可能挑出对自己最有利的解释 —— 同一只票能拿到 +0.53pp 或 −1.18pp，
+      全看算法挑了哪个板块。行业是交易所口径的分类，**每只票恰好一个、不参与挑选**，
+      因此它才是可信的相对强度锚点。
+      实证：600519 标的乙 f127=电力（而其涨停故事在"碳化硅"题材里）；
+            600000 标的甲 f127=教育（主营 81% 是教育，此前却拿"通信技术"做对比 —— G9）。
+    返回 {} 表示取数失败（调用方必须按"不可用"处理，不得伪造）。"""
+    u = (f'https://{EM_HOSTS[0]}/api/qt/stock/get?secid={secid(code)}'
+         f'&fields=f57,f58,f127,f128,f129&ut={UT}')
+    r = get(u) or get(u.replace(EM_HOSTS[0], EM_HOSTS[1]))
+    if not r:
+        return {}
+    try:
+        d = json.loads(r).get('data') or {}
+    except Exception:
+        return {}
+    if not d:
+        return {}
+    return {
+        'code': str(d.get('f57') or code),
+        'name': d.get('f58'),
+        'industry': d.get('f127'),                       # 客观行业（每票恰一个）
+        'area': d.get('f128'),
+        'concepts': [c for c in str(d.get('f129') or '').split(',') if c.strip()],
+    }
+
+
+_BOARD_IDX = {}
+
+
+def main_business(code, n=6):
+    """主营构成（东财 F10，最新报告期）。用于 G9「板块对比前先核对主业」。
+
+    返回 {'date':'2026-06-30', 'by_product':[(名称,占比%),…], 'by_industry':[…], 'by_region':[…]}；
+    返回 {} 表示取数失败 —— 调用方必须按「不可用」处理，**不得据此臆断主业**。
+    MAINOP_TYPE：1=按行业、2=按产品、3=按地区。**只有"按产品"能直接回答"它靠什么赚钱"**，
+    行业/地区口径会被"华东 93%"这类信息稀释。
+    为什么必须看它（G9 实证）：
+      · 600000 标的甲 主营 教育 81.21% / 物联网 18.11%，却被拿"通信技术"当板块对比；
+      · 600519 标的乙 主营 漆包线 64.87% / 光伏发电 18.16%，而涨停故事在"碳化硅"
+        —— 碳化硅连主营前列都没进，涨的是**题材标签**，不是业绩。
+    """
+    mkt = 'SH' if str(code)[0] == '6' else ('BJ' if str(code)[0] in '48' else 'SZ')
+    u = ('https://datacenter.eastmoney.com/securities/api/data/v1/get'
+         '?reportName=RPT_F10_FN_MAINOP'
+         '&columns=SECUCODE,REPORT_DATE,MAINOP_TYPE,ITEM_NAME,MAIN_BUSINESS_INCOME,MBI_RATIO'
+         f'&filter=(SECUCODE%3D%22{code}.{mkt}%22)&pageNumber=1&pageSize=60'
+         '&sortColumns=REPORT_DATE&sortTypes=-1&source=HSF10&client=PC')
+    r = get(u, ref='https://emweb.securities.eastmoney.com/')
+    if not r:
+        return {}
+    try:
+        res = (json.loads(r).get('result') or {}).get('data') or []
+    except Exception:
+        return {}
+    if not res:
+        return {}
+    d0 = str(res[0].get('REPORT_DATE') or '')[:10]
+    keys = {'1': 'by_industry', '2': 'by_product', '3': 'by_region'}
+    out = {'date': d0}
+    for x in res:
+        if str(x.get('REPORT_DATE') or '')[:10] != d0:
+            continue
+        k = keys.get(str(x.get('MAINOP_TYPE')))
+        nm = str(x.get('ITEM_NAME') or '').strip()
+        if not k or not nm or nm.startswith('其他(补充)'):
+            continue
+        ratio = (_fl(x.get('MBI_RATIO')) * 100) if _ok(x.get('MBI_RATIO')) else None
+        out.setdefault(k, []).append((nm, round(ratio, 2) if ratio is not None else None))
+    for k in ('by_product', 'by_industry', 'by_region'):
+        if out.get(k):
+            out[k] = sorted(out[k], key=lambda t: -(t[1] or 0))[:n]
+    return out
+
+
+def board_index(refresh=False):
+    """全市场板块索引：行业(m:90+t:2) + 概念(m:90+t:3)，进程内缓存。
+
+    返回 {'by_name': {名称: (bk, kind, zl亿, chg%)}, 'by_bk': {bk: (名称, kind, zl亿, chg%)}}
+      kind ∈ {'行业','概念'}；zl/chg 可能为 None（盘前或该字段限流），
+      **但名称与代码始终有效** —— 盘前也要能解析出板块，只是不参与资金打分。
+    """
+    if _BOARD_IDX and not refresh:
+        return _BOARD_IDX
+    by_name, by_bk = {}, {}
+    for fs, kind in (('m:90+t:2', '行业'), ('m:90+t:3', '概念')):
+        seen = set()
+        for pn in range(1, 9):
+            url = (f'https://{EM_HOSTS[0]}/api/qt/clist/get?pn={pn}&pz=100&po=1&np=1'
+                   f'&fltt=2&invt=2&fid=f62&fs={fs}&fields=f12,f14,f3,f62&ut={UT}')
+            r = get(url) or get(url.replace(EM_HOSTS[0], EM_HOSTS[1]))
+            if not r:
+                break
+            try:
+                j = json.loads(r)
+                dd = (j.get('data') or {})
+                diff = dd.get('diff') or []
+            except Exception:
+                break
+            if not diff:
+                break
+            for x in diff:
+                bk = str(x.get('f12'))
+                if not bk.startswith('BK') or bk in seen:
+                    continue
+                seen.add(bk)
+                nm = x.get('f14')
+                zl = _fl(x.get('f62')) / 1e8 if _ok(x.get('f62')) else None
+                chg = _fl(x.get('f3')) if _ok(x.get('f3')) else None
+                rec = (bk, kind, zl, chg)
+                by_bk[bk] = (nm, kind, zl, chg)
+                by_name.setdefault(nm, rec)      # 同名以先出现者为准（行业优先于概念）
+            if pn * 100 >= (dd.get('total') or 0):
+                break
+            time.sleep(0.2)
+    _BOARD_IDX.clear()
+    _BOARD_IDX.update({'by_name': by_name, 'by_bk': by_bk})
+    return _BOARD_IDX
 
 
 def _ok(v):
