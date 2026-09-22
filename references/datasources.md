@@ -188,3 +188,61 @@ def get(url, tries=3, enc='utf-8', ref='https://quote.eastmoney.com/'):
 
 - 429 / RemoteDisconnected **不是** IP 被封 → 换 ut / 换主机 / 加 0.8~1.5s 间隔重试，通常 3 次内成功。
 - 限流时应放缓到 **每次请求间隔 ≥0.5s**，批量任务加 0.3~0.5s 休眠。
+
+---
+
+## 11. 财务时点数据（PIT）—— 东财 datacenter `RPT_LICO_FN_CPD`
+
+**用途**：带财务因子的回测**必须**用它，否则会有前视偏差（look-ahead bias）。
+
+```
+https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LICO_FN_CPD
+  &columns=ALL&filter=(SECURITY_CODE="601169")&sortColumns=REPORTDATE&sortTypes=-1
+  &pageSize=40&pageNumber=1&source=WEB&client=WEB
+```
+
+- **Referer 必须设 `https://data.eastmoney.com/`**，否则 403。
+- 关键字段：`REPORTDATE`（报告期）· **`NOTICE_DATE`（实际公告日）** · `BASIC_EPS` ·
+  `TOTAL_OPERATE_INCOME`（营收）· `PARENT_NETPROFIT`（归母净利）· `WEIGHTAVG_ROE` ·
+  `YSTZ`（营收同比）· `SJLTZ`（净利同比）· `XSMLL`（毛利率）· `MGJYXJJE`（每股经营现金流）。
+- 封装：`ds.financials(code)` / `ds.fundamentals_at(code, 'YYYY-MM-DD')` / `ds.announce_calendar(code)`
+- ⚠️ `filter=` 里需要 URL 编码的双引号 `%22`。**若同时用 `%` 格式化拼接 URL，`%22` 会被当成格式符**，
+  报 `ValueError: unsupported format character ')'`。**一律用字符串加法或 f-string，不要混用 `%`**。
+- 实测（601169）：2026 中报报告期 2026-06-30，**公告日 2026-08-20** ——
+  整个 7 月都"看不到"这份中报。PIT 的可见性闸门就卡在这个日期上。
+
+## 12. 日线资金流历史 —— 东财 push2his `fflow/daykline`
+
+`ds.fflow(code, klt=101)` 实测**只返回当日 1 条**（`lmt=0` 也一样），拿不到历史。
+要历史必须走 daykline：
+
+```
+https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=0.601169
+  &fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62&lmt=0&klt=101&ut=<新ut>
+```
+
+字段顺序（逗号分隔，取 `data.klines`）：`f51` 日期 · `f52` 主力净额 · `f53` 小单 · `f54` 中单 ·
+`f55` 大单 · `f56` 超大单 · `f57~f61` 各类净占比 · **`f62` 收盘价**
+（⚠️ 是价格不是涨幅，极易误标）。
+
+**自检关系**（可用来自证字段顺序没读错）：主力净额 == 大单 + 超大单；且 主力 + 中单 + 小单 == 0。
+
+## 13. 个股快照（交叉校验用）—— 东财 push2 `stock/get`
+
+```
+https://push2.eastmoney.com/api/qt/stock/get?secid=0.601169
+  &fields=f43,f44,f45,f46,f47,f48,f60,f58&fltt=2&invt=2&ut=<新ut>
+```
+
+`f43` 现价 · `f44` 最高 · `f45` 最低 · `f46` 开盘 · `f47` 成交量(手) · `f48` 成交额(**元**) · `f60` 昨收。
+**`fltt=2` 必须带**，否则价格返回放大 100 倍的整数。
+
+⚠️ **量纲对照表**（跨源比对前必查）：
+
+| 指标 | 腾讯 `snapshot()` | 东财 `stock/get` |
+|---|---|---|
+| 价格 | 元 | 元（需 `fltt=2`） |
+| 成交量 | 手 | 手 |
+| **成交额** | **万元** | **元** |
+
+单位不一致比数值错误更难发现——比对前先拿一只"自己能手算"的票做量纲校验。

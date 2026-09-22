@@ -157,7 +157,11 @@ def score(d, notes):
         sc = 15.0
         items.append(('技术指标未取到（K 线源不可用），本维度按中性 15/30 计', 0))
     v = d.get('vr20', 0)
-    if v >= 2:
+    if d.get('intraday'):
+        items.append(('盘中量为<b>当日累计</b>，与 20 日<b>全天</b>均量口径不可比 '
+                      f'（现 {v:.2f} 倍），本项<b>不计分</b>；量能请以「量比」与'
+                      '「占昨日全日量比例」为准', 0))
+    elif v >= 2:
         sc += 2; items.append((f'成交量为 20 日均量 {v:.2f} 倍，显著放量', +2))
     elif v >= 1.5:
         sc += 1; items.append((f'成交量为 20 日均量 {v:.2f} 倍，温和放量', +1))
@@ -650,6 +654,11 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
                               [x['c'] for x in k] + [s['price']])
         v20 = [x['v'] for x in k[-20:]]
         d['vr20'] = (s['vol'] / (sum(v20) / len(v20))) if v20 and sum(v20) else 0
+    # ⚠️ 盘中（09:30~14:57）的 s['vol'] 是「当日累计」，而 vr20 的分母是 20 日「全天」均量
+    #    → 两个口径不可比，必然把放量算成缩量。实证 2026-09-21 09:55 标的乙：
+    #      开盘 25 分钟已成交昨日全天的 20.4%、量比 2.25，却被算成「0.40 倍 → 缩量 −2 分」。
+    #    故盘中一律不对量能做加减分，只保留数值供展示并强制标注口径（见 render 侧）。
+    d['intraday'] = bool(s.get('time')) and 930 <= int(str(s['time'])[8:12]) < 1457
 
     if do_bt:
         try:
@@ -1125,7 +1134,7 @@ def build(d, notes):
 <tr><th>项目</th><th>数值</th><th>判读</th></tr>
 <tr><td>开盘 / 最高 / 最低</td><td>{s['open']} / <b>{s['high']}</b> / {s['low']}</td><td>{'低开' if s['open'] < s['prev'] else '高开'} {(s['open'] / s['prev'] - 1) * 100:+.1f}%{('，' + d['touch_at'][:2] + ':' + d['touch_at'][2:] + ' 触板') if d.get('touch_at') else ''}</td></tr>
 <tr><td>前收盘 / 涨停价</td><td>{s['prev']} / {s['limit_up']}</td><td>{'已封死' if s.get('sealed') else ('未封板' if not _pre else '上一交易日未封板')}</td></tr>
-<tr><td>成交量 / 成交额</td><td>{s['vol'] / 1e4:.1f} 万手 / {_n(s.get('amount'), ' 亿', 2) if not _pre else '—'}</td><td>为 20 日均量的 <b>{d.get('vr20', 0):.2f} 倍</b></td></tr>
+<tr><td>成交量 / 成交额</td><td>{s['vol'] / 1e4:.1f} 万手 / {_n((s.get('amount') or 0) / 1e4, ' 亿', 2) if not _pre else '—'}</td><td>{('盘中为当日<b>累计</b>量，与 20 日<b>全天</b>均量口径不可比，仅供参考（现 <b>' + f"{d.get('vr20', 0):.2f}" + '</b> 倍）') if d.get('intraday') else ('为 20 日均量的 <b>' + f"{d.get('vr20', 0):.2f}" + '</b> 倍')}</td></tr>
 <tr><td>换手率</td><td>{_n(s.get('hs'), '%')}</td><td>{'—' if _pre else ('活跃' if s['hs'] > 3 else '一般')}</td></tr>
 <tr><td>量比</td><td><b>{_n(s.get('lb'))}</b></td><td>{'—' if _pre else ('量能未有效放大' if s['lb'] < 2 else '量能有效')}</td></tr>
 <tr><td>日内均价 VWAP</td><td><b>{_n(d.get('vwap'), '', 3)}</b></td><td>{'盘前无分时数据，不可用' if _pre else f"现价 {s['price']} {'低于' if s['price'] < d.get('vwap', 0) else '高于'}均价"}</td></tr>
@@ -1491,6 +1500,49 @@ def build(d, notes):
     return '\n'.join(H)
 
 
+# ------------------------------------------------------------------ PDF 导出（README P2-7）
+def to_pdf(html_path):
+    """用本机 Chrome headless 把 HTML 导成 PDF（便于存档与分享）。
+
+    实测可用开关：--headless=new --print-to-pdf --no-pdf-header-footer
+    ⚠️ 不要用 --screenshot 代替：长报告会被截断成首屏。
+    """
+    import subprocess
+    cands = [
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        os.path.expanduser(r'~\AppData\Local\Google\Chrome\Application\chrome.exe'),
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        'google-chrome', 'chromium', 'chromium-browser',
+    ]
+    exe = next((c for c in cands if os.path.sep in c and os.path.exists(c)), None) or \
+          next((c for c in cands if os.path.sep not in c), None)
+    if not exe:
+        print('      ⚠️ 未找到 Chrome，跳过 PDF（可手动打开 HTML 后"打印为 PDF"）')
+        return None
+    # ⚠️ 必须用**绝对路径**：Chrome 的 --print-to-pdf 不认相对路径（会写到它自己的工作目录），
+    #    实测相对路径下 os.path.exists 恒为 False，表现为"Chrome 未生成有效 PDF"。
+    #    另注：中文路径与含空格路径均可用（已实测），只有"相对路径"会失败。
+    pdf = os.path.abspath(os.path.splitext(html_path)[0] + '.pdf')
+    url = 'file:///' + os.path.abspath(html_path).replace('\\', '/')
+    base = [exe, '--headless=new', '--disable-gpu', '--no-sandbox', '--virtual-time-budget=5000']
+    out = ''
+    # 先带 --no-pdf-header-footer；失败则退回不带（老版本 Chrome 不认该开关）
+    for extra in (['--no-pdf-header-footer'], []):
+        cmd = base + extra + ['--print-to-pdf=' + pdf, url]
+        try:
+            p = subprocess.run(cmd, timeout=180, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out = (p.stdout or b'').decode('utf-8', 'replace').strip()
+        except Exception as e:
+            out = 'subprocess 异常：%s' % e
+        if os.path.exists(pdf) and os.path.getsize(pdf) > 1024:
+            print('      已导出 PDF: %s (%.1f KB)' % (pdf, os.path.getsize(pdf) / 1024))
+            return pdf
+    print('      ⚠️ Chrome 未生成有效 PDF。Chrome 输出：%s' % (out[:200] or '(空)'))
+    print('         排查顺序：① 输出目录写权限 ② Chrome 版本是否支持 --headless=new ③ 是否被已运行的 Chrome 会话拦截')
+    return None
+
+
 # ------------------------------------------------------------------ 入口
 def main():
     ap = argparse.ArgumentParser(description='一键生成卡片式 HTML 深度分析报告（含券商式评级）')
@@ -1503,6 +1555,8 @@ def main():
     ap.add_argument('--notes', default=None, help='notes.json 路径（注入人工研判段落）')
     ap.add_argument('--no-bt', action='store_true', help='跳过回测（更快）')
     ap.add_argument('--no-ladder', action='store_true', help='跳过连板梯队扫描')
+    ap.add_argument('--pdf', action='store_true',
+                    help='额外导出 PDF（复用本机 Chrome headless，见 README P2-7）')
     a = ap.parse_args()
 
     cfg.require()          # 首次使用必须先做基础数据录入（资金/权限/费用率）
@@ -1537,6 +1591,8 @@ def main():
     with open(out, 'w', encoding='utf-8') as f:
         f.write(html)
     print(f'[3/3] 已生成: {os.path.abspath(out)}  ({len(html) / 1024:.1f} KB)')
+    if a.pdf:
+        to_pdf(out)
 
 
 if __name__ == '__main__':

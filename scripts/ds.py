@@ -641,10 +641,86 @@ def indicators(closes, highs=None, lows=None, live=None):
     }
 
 
+# ---------------------------------------------------------------- 9. 财务时点数据（PIT）
+def financials(code, page_size=40):
+    """个股历史业绩报表（含**实际公告日**）——PIT 时点回测的基础。
+
+    返回 list[dict]，按报告期倒序：
+      {'report':'2026-06-30', 'notice':'2026-08-20', 'eps':0.075, 'revenue':1.42e9,
+       'netprofit':..., 'roe':5.21, 'rev_yoy':..., 'np_yoy':..., 'bps':...,
+       'ocf_ps':..., 'gross_margin':...}
+
+    ⚠️ 为什么必须用 NOTICE_DATE 而不是 REPORTDATE（look-ahead bias）：
+       2026 中报的"报告期"是 2026-06-30，但**实际公告日是 2026-08-20**。
+       若回测在 07-15 用这份财报做决策，用的就是当时根本不存在的未来信息 ——
+       这是任何带财务因子的回测高估收益的**第一大来源**。
+    """
+    url = ('https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_LICO_FN_CPD'
+           '&columns=ALL&filter=(SECURITY_CODE=%22' + code + '%22)'
+           '&sortColumns=REPORTDATE&sortTypes=-1&pageSize=' + str(page_size) + '&pageNumber=1'
+           '&source=WEB&client=WEB')
+    r = get(url, ref='https://data.eastmoney.com/')
+    if not r:
+        return []
+    try:
+        rows = (json.loads(r).get('result') or {}).get('data') or []
+    except Exception:
+        return []
+    out = []
+    for x in rows:
+        rd, nd = x.get('REPORTDATE'), x.get('NOTICE_DATE')
+        if not rd:
+            continue
+        out.append({
+            'report': str(rd)[:10],
+            'notice': str(nd)[:10] if nd else None,
+            'eps': _fl(x.get('BASIC_EPS')),
+            'revenue': _fl(x.get('TOTAL_OPERATE_INCOME')),
+            'netprofit': _fl(x.get('PARENT_NETPROFIT')),
+            'roe': _fl(x.get('WEIGHTAVG_ROE')),
+            'rev_yoy': _fl(x.get('YSTZ')),
+            'np_yoy': _fl(x.get('SJLTZ')),
+            'bps': _fl(x.get('BPS')),
+            'ocf_ps': _fl(x.get('MGJYXJJE')),
+            'gross_margin': _fl(x.get('XSMLL')),
+        })
+    return out
+
+
+def fundamentals_at(code, date, fin=None):
+    """PIT 取值：返回 date（'YYYY-MM-DD'）当天**已公告**的最新一期财报。
+
+    规则：notice ≤ date 的报告期中 report 最大者。
+    公告日缺失时按「报告期 + 45 天」保守估计 —— **宁可晚用，绝不早用**（保守方向才安全）。
+    """
+    fin = fin if fin is not None else financials(code)
+    if not fin:
+        return None
+    cands = []
+    for f in fin:
+        nd = f['notice']
+        if not nd:
+            try:
+                import datetime as _dt
+                nd = (_dt.date.fromisoformat(f['report']) + _dt.timedelta(days=45)).isoformat()
+            except Exception:
+                continue
+        if nd <= date:
+            cands.append(f)
+    return max(cands, key=lambda f: f['report']) if cands else None
+
+
+def announce_calendar(code, fin=None):
+    """公告日历 [(公告日, 报告期)] —— 人工核对"某日当时能看到什么"用。"""
+    fin = fin if fin is not None else financials(code)
+    return sorted([(f['notice'], f['report']) for f in fin if f['notice']])
+
+
 __all__ = ['snapshot', 'clist', 'ulist', 'fflow', 'fflow_at', 'slist', 'sector_members',
            'sector_stats', 'kline_em', 'kline_sina', 'kline_qq', 'kline', 'mood',
            'ma', 'ema', 'rsi', 'boll', 'macd', 'cci', 'kdj', 'wr', 'mom', 'pos',
-           'indicators', 'allowed', 'secid', 'tsym', 'n100', 'get', 'UT', 'MARKET_MAIN']
+           'indicators', 'allowed', 'secid', 'tsym', 'n100', 'get', 'UT', 'MARKET_MAIN',
+           'financials', 'fundamentals_at', 'announce_calendar']
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@
   "allowed_prefixes": ["60", "000", "001", "002", "003"],
   "max_price": null,
   "exclude_st": true,
+  "market": "cn_main",
 
   "commission_rate": 0.00025,
   "commission_min": 5.0,
@@ -15,6 +16,11 @@
   "take_profit_pct": 2.0,
   "position_mode": "single",
   "min_avg_amount_yi": 0.5,
+
+  "max_drawdown_pct": 15.0,
+  "halt_days": 5,
+  "risk_per_trade_pct": 5.0,
+  "max_same_sector_streak": 1,
 
   "_字段说明": {
     "cash": "必填。可用资金（元）。用于计算可买股数 / 资金占用 / 单次费用。清仓或调仓后请更新为实际可用资金。",
@@ -29,6 +35,11 @@
     "take_profit_pct": "兑现目标（%）。**执行规则见 SKILL.md §2.5.4**。",
     "position_mode": "仓位模式：single = 全仓单吊一只；equal = 等权分散（本工具默认按 single 口径输出股数）。",
     "min_avg_amount_yi": "最小日均成交额（亿元），用于过滤流动性太差的标的。",
+    "market": "市场档（多市场适配）。cn_main = 沪深主板（涨跌停 10%）；cn_all = 含创业板/科创板（20%）；cn_bj = 北交所（30%）。换市场只改这里，不动代码。",
+    "max_drawdown_pct": "★ 账户级回撤熔断线（%）。已实现回撤达到该值 → risk.py 自动禁止开仓 halt_days 天。**只允许收紧**，放宽等于取消熔断。",
+    "halt_days": "熔断后暂停开仓的自然日数。",
+    "risk_per_trade_pct": "★ 单笔最大亏损占权益上限（%）。用于反推仓位上限：止损 -4% + 该值 5% → 允许满仓；止损 -8% 则仓位须减半。",
+    "max_same_sector_streak": "连续同行业开仓上限。1 = 禁止连续两笔押同一条行业线（全仓单吊下，这是唯一能分散系统性风险的手段）。",
     "_费用模型": "本版不再使用单一比例费率。原因：最低佣金是固定金额，与成交额无关，单一比例口径会在小资金下系统性低估费用（实测 6,178 元一笔双边 0.00 元 = 0.212%，其中 10 元来自最低佣金）。计算入口：cfg.buy_cost / cfg.sell_proceeds / cfg.break_even / cfg.stop_price。"
   }
 }

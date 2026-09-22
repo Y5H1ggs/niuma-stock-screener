@@ -1,6 +1,9 @@
 # 个人参数（脱敏：绝不进仓库）
 config.json
 
+# 个人交易台账与账户状态（**绝不进仓库**：含真实成交、成本、资金）
+journal/
+
 # Python
 __pycache__/
 *.py[cod]

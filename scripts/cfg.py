@@ -31,6 +31,36 @@ DEFAULTS = {
     'take_profit_pct': 2.0,                         # 兑现目标（%）
     'position_mode': 'single',                      # single = 全仓单吊单只
     'min_avg_amount_yi': 0.5,                       # 最小日均成交额（亿元），过滤流动性差的票
+    # ---- 账户级风控（README P0-2）----
+    'max_drawdown_pct': 15.0,                       # 已实现回撤达到该值 → 触发熔断（暂停开仓）
+    'halt_days': 5,                                 # 熔断后暂停开仓的自然日数
+    'risk_per_trade_pct': 5.0,                      # 单笔最大亏损占权益上限（%）——决定仓位上限
+    'max_same_sector_streak': 1,                     # 连续同行业开仓上限（1 = 禁止连续同行业）
+    'market': 'cn_main',                            # 市场档（P2-9 多市场适配），见 MARKETS
+}
+
+# 市场档（README P2-9）：把硬约束做成可配置项，换市场只改这里
+MARKETS = {
+    'cn_main': {
+        'name': '沪深主板',
+        'allowed_prefixes': ['60', '000', '001', '002', '003'],
+        'limit_pct': 10.0,          # 涨跌停幅度（%）
+        'lot': 100,                 # 最小交易单位（股）
+        't_plus': 1,                # T+1
+        'currency': 'CNY',
+    },
+    'cn_all': {
+        'name': '沪深全市场（含创业板/科创板，需相应权限）',
+        'allowed_prefixes': ['60', '000', '001', '002', '003', '300', '301', '688', '689'],
+        'limit_pct': 20.0,
+        'lot': 100, 't_plus': 1, 'currency': 'CNY',
+    },
+    'cn_bj': {
+        'name': '北交所（需开通权限）',
+        'allowed_prefixes': ['43', '83', '87', '88', '92'],
+        'limit_pct': 30.0,
+        'lot': 100, 't_plus': 1, 'currency': 'CNY',
+    },
 }
 
 HELP = """
@@ -106,6 +136,17 @@ def require():
         print('   ↑ 检测到 config.json 存在，但 cash（可用资金）没填或不是正数。\n')
         raise SystemExit(2)
     return c
+
+
+# ------------------------------------------------------------ 市场档（P2-9 多市场适配）
+def market():
+    """当前市场档参数。换市场只改 config.json 的 market 字段，不动代码。"""
+    return MARKETS.get(get('market') or 'cn_main', MARKETS['cn_main'])
+
+
+def limit_pct():
+    """涨跌停幅度（%），按市场档取（主板 10 / 创业科创 20 / 北交所 30）。"""
+    return float(get('limit_pct') or market()['limit_pct'])
 
 
 # ------------------------------------------------------------ 费用与纪律计算

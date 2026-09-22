@@ -15,6 +15,8 @@ from ds import (snapshot, clist, kline, indicators, allowed, n100, MARKET_MAIN, 
 
 CASH = None          # None = 用 config.json 的 cash（个人资金不写死在代码里）
 MAXPX = None         # None = 用 config.json 的 max_price（可再被 --maxpx 覆盖）
+ALL = False          # False = 启用 P39 可交易性闸门（剔除已封板票）；True = --all 显示全部
+LIMIT_UP = 9.5       # 主板涨停 10%，≥9.5% 视为已贴板/封板，散户实际买不进
 
 
 def load_rows(pages=10):
@@ -42,7 +44,7 @@ def screen(rows, mode):
     会静默制造利空），而是保留并显式警告。"""
     if mode not in ('strong', 'trend', 'potential'):
         raise SystemExit('mode: strong | trend | potential')
-    out, no_zl = [], 0
+    out, no_zl, no_trade = [], 0, 0
     for x in rows:
         try:
             r = base(x)
@@ -61,8 +63,12 @@ def screen(rows, mode):
             r['zl'] = 0.0                       # 占位显示，不参与下面的资金过滤
         elif r['zl'] <= 0:
             continue
-        if mode == 'strong' and r['chg'] < 6.0:
-            continue
+        if mode == 'strong':
+            if r['chg'] < 6.0:
+                continue
+            if not ALL and r['chg'] >= LIMIT_UP:    # ★ P39 可交易性闸门
+                no_trade += 1
+                continue
         if mode == 'potential' and not (2.0 <= r['chg'] < 9.5):
             continue
         if mode == 'trend' and r['chg'] < 1.0:
@@ -72,6 +78,9 @@ def screen(rows, mode):
     if no_zl:
         print(f'⚠️ 有 {no_zl} 只候选的主力净额字段取数失败（东财 f62 返回占位符 "-"），'
               f'已**跳过资金过滤**保留在池中 —— 结果仅供观察，资金面须另行验证。')
+    if no_trade:
+        print(f'⚠️ {no_trade} 只已涨停/贴板（涨幅 ≥{LIMIT_UP}%）按 P39「可交易性闸门」剔除 ——'
+              f'买一队列成交概率极低，留在清单里等于不可执行。用 --all 可强制显示。')
     return out
 
 
@@ -118,6 +127,8 @@ if __name__ == '__main__':
             CASH = int(sys.argv[i + 1])
         if a == '--maxpx':
             MAXPX = float(sys.argv[i + 1])
+        if a == '--all':
+            ALL = True                     # 跳过 P39 闸门，显示含已封板的全部候选
     rows = load_rows()
     print(f'候选池(涨幅降序抓取，已按 config 的板块权限过滤): {len(rows)} 只'
           f'　资金 {CASH:.0f} 元' + (f'　价格上限 {MAXPX:g} 元' if MAXPX else '　不限价'))
