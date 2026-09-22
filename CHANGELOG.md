@@ -9,6 +9,18 @@
 
 ---
 
+## v1.2.2 — 2026-09-22 · 两处口径修复（盘中实测发现）
+
+| 编号 | 缺陷 | 影响 | 修法 |
+|---|---|---|---|
+| **P48** | 数据目录 `journal/` 与脚本 `journal.py` **同名** | 从项目根执行 `import journal` 会命中**目录**（Python 3 namespace package），报 `AttributeError: module 'journal' has no attribute 'list_trades'`。**不报 ModuleNotFoundError，而是导入一个空壳模块** —— 报错长得像"函数没写"，把排查引向错误方向 | 数据目录改名 **`_journal/`**；`.gitignore`、README、calibration.md 同步 |
+| **P49** | `predict.py` 的"触及保本价"硬编码 **100 股** | 最低佣金是**固定值**，100 股摊得比 500 股贵 → 保本价算高、**概率系统性偏保守**。同一天同一形态实测：**76% vs 修正后 86%**，差 **10pp**，足以改变"给不给兑现窗口"的判断 | `stats()` 接受实际股数，CLI 增 `--shares` |
+
+> 两处都属于"**看起来完全正常的错误**"：不崩溃、数字自洽、只是悄悄失真。
+> 这恰好再次印证 v1.3 计划里「**自证校验常驻化**」的必要性——能被断言抓住的错，不该靠人眼。
+
+---
+
 ## v1.2.1 — 2026-09-22 · 仓库元信息规范化
 
 - **License 修正（NOASSERTION 根因）**：`LICENSE` 原本**已经是 MIT 标准正文**，

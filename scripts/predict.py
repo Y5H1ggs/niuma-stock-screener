@@ -103,7 +103,7 @@ def neighbourhood(k, t, rsi_bw=8, pctb_bw=15, cci_bw=80, require_ma=True):
     return res
 
 
-def stats(res, s, cost=None):
+def stats(res, s, cost=None, shares=100):
     n = len(res)
     p = lambda f: sum(1 for r in res if f(r)) / n * 100
     out = {
@@ -129,7 +129,7 @@ def stats(res, s, cost=None):
         need = None
         try:
             import cfg
-            need = cfg.break_even(cost, 100) / s['price'] - 1
+            need = cfg.break_even(cost, shares) / s['price'] - 1
         except Exception:
             pass
         if need is not None:
@@ -145,9 +145,12 @@ def main():
         raise SystemExit('用法: python predict.py <代码> [--cost 成本价]')
     code = args[0]
     cost = None
-    for i, a in enumerate(sys.argv):
+    shares = 100          # ⚠️ 必须传实际股数：最低佣金(5元/边)摊薄程度随股数变化，
+    for i, a in enumerate(sys.argv):   # 用 100 股算会高估保本价、低估"触及保本"概率
         if a == '--cost':
             cost = float(sys.argv[i + 1])
+        if a == '--shares':
+            shares = int(sys.argv[i + 1])
 
     t, s = today_feats(code)
     k = kline_qq(code, 800)
@@ -183,7 +186,7 @@ def main():
 
     if len(res) < 10:
         print('\n  ⚠️ 邻域样本 N=%d <10 → **不可外推**，以下数字仅供参照。' % len(res))
-    st = stats(res, s, cost)
+    st = stats(res, s, cost, shares)
     print('\n' + '=' * 104)
     print('【采用邻域 %s · N=%d】次日概率分布' % (nm, st['n']))
     print('=' * 104)

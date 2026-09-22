@@ -95,7 +95,7 @@
 | `scripts/patterns.py` | 形态库扩展（22 条，四族）+ **一行 DSL 自定义形态**（`--rule "close>ma5 and rsi14<40"`） |
 | `scripts/predict.py` | **次日涨跌概率预测**（形态邻域回测；开 / 收 / 盘中**三口径分离**，见铁律 12） |
 | `scripts/report.py` | **一键生成卡片式 HTML 深度分析报告**（`--pdf` 可导出 PDF） |
-| `scripts/journal.py` | **交易 / 预测台账**（append-only；`journal/` 已被 .gitignore 屏蔽，个人数据不进仓库） |
+| `scripts/journal.py` | **交易 / 预测台账**（append-only；数据落在 `_journal/`，已被 .gitignore 屏蔽，个人数据不进仓库） |
 | `scripts/calibrate.py` | **校准报告**：业绩归因 / 止损执行率与漏单 / 预测校准与 Brier / 参数建议 |
 | `scripts/risk.py` | **账户级风控闸门**：回撤熔断 · 行业敞口 · 市值档 · 风险预算 |
 | `scripts/fees.py` | 费用敏感度：最小可做资金线 · 成本矩阵 · 临界涨幅 |
