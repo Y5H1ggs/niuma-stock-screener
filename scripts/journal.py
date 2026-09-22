@@ -31,7 +31,12 @@ import cfg
 # 调用方随后 print 就报 "I/O operation on closed file"。重绑一律放进 __main__。别删这行注释。
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-JDIR = os.path.join(ROOT, 'journal')
+# ⚠️ 数据目录**不能叫 `journal`** —— 会与同目录的 `journal.py` 撞名：
+#    从项目根目录 `import journal` 时，Python 会把 `journal/` 目录当成
+#    namespace package 导入（而不是 journal.py），于是报
+#    `AttributeError: module 'journal' has no attribute 'list_trades'`。
+#    实测踩到过（P48）。加下划线前缀彻底消除歧义。
+JDIR = os.path.join(ROOT, '_journal')
 P_TRADES = os.path.join(JDIR, 'trades.json')
 P_FORECASTS = os.path.join(JDIR, 'forecasts.json')
 P_ACCOUNT = os.path.join(JDIR, 'account.json')

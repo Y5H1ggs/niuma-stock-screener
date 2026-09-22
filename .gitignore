@@ -2,6 +2,8 @@
 config.json
 
 # 个人交易台账与账户状态（**绝不进仓库**：含真实成交、成本、资金）
+# ⚠️ 目录名带下划线前缀，避免与脚本 journal.py 撞名（见 pitfalls P48）
+_journal/
 journal/
 
 # Python
