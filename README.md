@@ -6,7 +6,7 @@
 > 名字来源：干活的牛马自己给自己写工具。**不装任何 pip 包**，纯标准库跑通全链路。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.8`（2026-09-22）　·　许可 MIT　·　完整版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.2.9`（2026-09-22）　·　许可 MIT　·　完整版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
