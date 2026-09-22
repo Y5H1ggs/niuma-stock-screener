@@ -2,7 +2,7 @@
 """journal.py — 交易台账 + 预测台账（append-only）
 
 用法：
-    python journal.py add --code 601169 --name 标的丙 --price 10.00 --shares 500 --signal manual
+    python journal.py add --code 600000 --name 示例标的 --price 10.00 --shares 500 --signal manual
     python journal.py close --id 20260922-601169 --price 11.50 --reason target
     python journal.py list [--open]
     python journal.py status
@@ -296,22 +296,53 @@ def _status():
         acc['cash'], acc['peak_equity'], acc.get('halt_until') or '无'))
 
 
+def _req(name, cast=None, hint=''):
+    """取必填参数；缺失或类型不符时给出**明确提示**并退出。
+
+    原先 CLI 直接 `float(_arg('--price'))`：漏参时抛 `float() argument must be ... not NoneType`，
+    参数写错时抛 `could not convert string to float` —— 都是 Python 堆栈，
+    而 CLI 的用户（含复制 README 示例的人）需要的是"哪个参数、该写什么"。
+    """
+    v = _arg(name)
+    if v is None:
+        raise SystemExit('缺少必填参数 %s%s' % (name, ('　例：' + hint) if hint else ''))
+    if cast is not None:
+        try:
+            return cast(v)
+        except ValueError:
+            raise SystemExit('参数 %s 的值 %r 不是合法%s' % (
+                name, v, '数字' if cast is float else '整数'))
+    return v
+
+
 if __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'status'
     if cmd == 'add':
-        r = add_trade(_arg('--code'), _arg('--name', ''), _arg('--date', _today()),
-                      float(_arg('--price')), int(_arg('--shares')),
+        r = add_trade(_req('--code', hint='--code 600000'),
+                      _arg('--name', ''), _arg('--date', _today()),
+                      _req('--price', float), _req('--shares', int),
                       signal=_arg('--signal', 'manual'), notes=_arg('--notes', ''),
                       stop=float(_arg('--stop')) if _arg('--stop') else None)
         print('已登记：', json.dumps(r, ensure_ascii=False))
+        if r['id'].endswith('b'):
+            print('  ⚠️ 已存在同日同代码的记录，本次以 id 加后缀 `b` 另存。'
+                  '若是**重复执行**同一条命令，请用 `journal.py list` 核对后删掉多余那条。')
         print('  （现金余额不会自动调整，请用 `python journal.py cash <金额>` 校准）')
     elif cmd == 'cash':
+        if len(sys.argv) < 3:
+            raise SystemExit('用法：python journal.py cash <可用资金>　例：-- 5000')
         print('已更新：', json.dumps(set_cash(float(sys.argv[2])), ensure_ascii=False))
     elif cmd == 'close':
-        r = close_trade(_arg('--id'), _arg('--date', _today()), float(_arg('--price')),
+        _i = _req('--id', hint='--id 20260105-600000')
+        r = close_trade(_i, _arg('--date', _today()), _req('--price', float),
                         reason=_arg('--reason', 'manual'))
-        print('已平仓：', json.dumps(r, ensure_ascii=False) if r else '找不到该笔')
+        if not r:
+            # ⚠️ 原实现是 print('已平仓：', ... if r else '找不到该笔') ——
+            #    失败时仍打印"已平仓："，**把失败报成成功**。现改为报错并非零退出。
+            raise SystemExit('未找到该笔：id = %s\n  先用 `journal.py list` 核对；'
+                             'id 格式为「建仓日+代码」，如 20260105-600000。' % _i)
+        print('已平仓：', json.dumps(r, ensure_ascii=False))
     elif cmd == 'list':
         for t in list_trades(open_only='--open' in sys.argv):
             print(json.dumps(t, ensure_ascii=False))
