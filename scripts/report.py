@@ -491,14 +491,19 @@ def ladder_scan(topn=80, pre=False):
 
 
 # ------------------------------------------------------------------ 数据汇总
-def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
+def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True, anon=False):
     if cash is None:
         cash = cfg.get('cash') or 0
-    d = {'code': code, 'cash': cash,
+    if anon:
+        # 脱敏模式（--anon，v1.2.7）：本报告的读者不是账户持有人时使用。
+        # 归零后下游自动变成中性：资金占用行改印"—"、自证校验按 100 股（每边最低佣金
+        # 的摊薄口径与持仓规模无关，仅用于费用模型自洽断言），不泄露任何本金/持仓。
+        cash = 0
+    d = {'code': code, 'cash': cash, 'anon': anon,
          'fee': float(cfg.get('fee_rate_roundtrip', 0.0018)),
          'stop': float(cfg.get('stop_loss_pct', -4.0)),
          'target': float(cfg.get('take_profit_pct', 2.0))}
-    if not allowed(code):
+    if (not anon) and (not allowed(code)):
         pre = '、'.join(str(x) for x in (cfg.get('allowed_prefixes') or []))
         d['warn_allowed'] = (f'⚠️ 该标的超出你在 config.json 里声明的可交易板块'
                              f'（allowed_prefixes = {pre}），仅作分析展示。')
@@ -1235,7 +1240,7 @@ def build(d, notes):
 <tr><td>买1 / 卖1 挂单</td>{_blank if _pre else f"<td class='num'>{s['bids'][0][1] if s['bids'] else 0} / {s['asks'][0][1] if s['asks'] else 0} 手</td><td>{'近端承接薄' if s['bids'] and s['bids'][0][1] < 500 else '近端承接正常'}</td>"}</tr>
 {flowrow}
 <tr><td>大盘（{hm}）</td><td>{'　|　'.join(ibits)}</td><td>—</td></tr>
-<tr><td>资金占用</td><td><b>{n100(s['price'], d['cash'])} 股 = {n100(s['price'], d['cash']) * s['price']:.0f} 元</b>（config 资金 {d['cash']:.0f}）</td><td>双边费用约 {n100(s['price'], d['cash']) * s['price'] * d['fee']:.0f} 元，需涨 {d['fee'] * 100:.2f}% 才回本</td></tr>
+{d.get('anon') and '<tr><td>资金占用</td><td>—（本报告为<b>脱敏版</b>，不含账户资金与持仓口径）</td><td>—</td></tr>' or f"<tr><td>资金占用</td><td><b>{n100(s['price'], d['cash'])} 股 = {n100(s['price'], d['cash']) * s['price']:.0f} 元</b>（config 资金 {d['cash']:.0f}）</td><td>双边费用约 {n100(s['price'], d['cash']) * s['price'] * d['fee']:.0f} 元，需涨 {d['fee'] * 100:.2f}% 才回本</td></tr>"}
 </table>'''
     A(C('一、数据速览',
         SC('核心盘口', kp, cnt=f'{hm} 快照')
@@ -1594,14 +1599,20 @@ def build(d, notes):
     ul.append('资金流按成交单大小推断主体，存在拆单干扰；单日数据噪音大，须以 2~3 日连续性验证。')
     ul.append('板块内排名靠后的跟风票，板块退潮时跌幅常大于龙头；若最猛的主线正主在 688/300，'
               '无交易权限则只能吃主板影子票，联动强度天然打折。')
-    ul.append(f'按 config 资金 {d["cash"]:.0f} 元，双边费用约 '
-              f'{n100(s["price"], d["cash"]) * s["price"] * d["fee"]:.0f} 元'
-              f'（{d["fee"] * 100:.2f}%），日内 ±1% 的波动不等于收益。')
-    ul.append(f'你的止损纪律为 <b>{d["stop"]:.1f}%</b>，兑现目标 {d["target"]:.1f}%；'
-              f'触发即执行，不因"形态还没坏"而放宽——超短模式的 alpha 在风控不在选股。')
+    if d.get('anon'):
+        ul.append(f'T+1 隔日模式的双边交易成本约 <b>{d["fee"] * 100:.2f}%</b>（佣金 / 印花税 / 过户费），'
+                  f'<b>日内 ±1% 的波动不等于收益</b>；小资金还要额外承担每边最低佣金的固定摩擦。')
+        ul.append('超短模式的 alpha 在风控不在选股：止损位须在买入前算好并机械执行，'
+                  '不因"形态还没坏"而放宽。')
+    else:
+        ul.append(f'按 config 资金 {d["cash"]:.0f} 元，双边费用约 '
+                  f'{n100(s["price"], d["cash"]) * s["price"] * d["fee"]:.0f} 元'
+                  f'（{d["fee"] * 100:.2f}%），日内 ±1% 的波动不等于收益。')
+        ul.append(f'你的止损纪律为 <b>{d["stop"]:.1f}%</b>，兑现目标 {d["target"]:.1f}%；'
+                  f'触发即执行，不因"形态还没坏"而放宽——超短模式的 alpha 在风控不在选股。')
     ul.append('<b>顶部评级为 100 分制机械打分结果，非券商研报、非投资建议、不构成任何买卖指令</b>；'
               '据此操作风险自担。')
-    if not allowed(code):
+    if (not d.get('anon')) and (not allowed(code)):
         pre = '、'.join(str(x) for x in (cfg.get('allowed_prefixes') or []))
         ul.append(f'🔴 <b>该标的不在 config 声明的可交易板块内</b>'
                   f'（allowed_prefixes = {pre}），无权限则不可操作，本节仅作分析参考。')
@@ -1688,6 +1699,8 @@ def main():
     ap.add_argument('--notes', default=None, help='notes.json 路径（注入人工研判段落）')
     ap.add_argument('--no-bt', action='store_true', help='跳过回测（更快）')
     ap.add_argument('--no-ladder', action='store_true', help='跳过连板梯队扫描')
+    ap.add_argument('--anon', action='store_true',
+                    help='脱敏模式：不读取/不展示账户资金与持仓口径（报告给别人看时用）')
     ap.add_argument('--pdf', action='store_true',
                     help='额外导出 PDF（复用本机 Chrome headless，见 README P2-7）')
     a = ap.parse_args()
@@ -1701,10 +1714,13 @@ def main():
         notes.setdefault('title', a.title)
 
     cash = a.cash if a.cash else cfg.get('cash')
-    print(f'[1/3] 采集 {a.code} 数据 …（资金 {cash:.0f} 元，来源：'
-          f'{"命令行" if a.cash else "config.json"}）')
+    if a.anon:
+        print(f'[1/3] 采集 {a.code} 数据 …（脱敏模式：不读取也不展示账户资金）')
+    else:
+        print(f'[1/3] 采集 {a.code} 数据 …（资金 {cash:.0f} 元，来源：'
+              f'{"命令行" if a.cash else "config.json"}）')
     d = gather(a.code, sector_top=a.sector_top, cash=cash,
-               do_bt=not a.no_bt, do_ladder=not a.no_ladder)
+               do_bt=not a.no_bt, do_ladder=not a.no_ladder, anon=a.anon)
     s = d['snap']
     sc = score(d, notes)
     _lb = s.get('lb')
