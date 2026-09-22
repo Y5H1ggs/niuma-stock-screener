@@ -38,6 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cfg
 import ds
+import charts
 from ds import (_fl, _ok, snapshot, ulist, fflow, slist, sector_stats, kline_qq,
                 indicators, kdj, mood, n100, allowed, tsym, get, MARKET_MAIN)
 
@@ -378,7 +379,8 @@ def score(d, notes):
     if no_rating:
         rating, tone_, rdesc = '数据不足', 'y', '资金面与板块面均取数失败，本次不提供评级'
     return {'total': round(total), 'rating': rating, 'tone': tone_, 'desc': rdesc,
-            'dims': dims, 'missing': missing, 'no_rating': no_rating}
+            'dims': dims, 'missing': missing, 'no_rating': no_rating,
+            'selfcheck': d.get('selfcheck')}
 
 
 # ------------------------------------------------------------------ 工具
@@ -689,6 +691,33 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True):
         except Exception:
             d['ladder'], d['ladder_failed'], d['ladder_ok'] = [], 0, False
 
+    # ---- 日线资金流（近 14 日，供报告的资金流向图使用）----
+    # 用东财 push2his daykline：注意 ds.fflow(klt=101) 只回当日一条，拿不到历史。
+    try:
+        _fu = ('https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=%s'
+               '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56&klt=101&lmt=0&ut=%s'
+               % (ds.secid(code), ds.UT))
+        _fj = json.loads(ds.get(_fu) or '{}')
+        _fk = (_fj.get('data') or {}).get('klines') or []
+        d['flow_daily'] = [(x.split(',')[0], ds._fl(x.split(',')[1]) / 1e4)
+                           for x in _fk[-14:]]
+    except Exception:
+        d['flow_daily'] = []
+
+    # ---- 自证校验（常驻，v1.3.0）----
+    # 设计意图：本项目最危险的不是崩溃，而是"**看起来完全正常的错误**"——
+    # 占位符被读成 0、单位差 100 倍、字段顺序读错。它们不抛异常、数字自洽，
+    # 只会让结论悄悄失真。所以**每次采集后自动跑一遍**，而不是等人工偶然发现。
+    # 失败项会写进报告的「数据完整度」卡；校验器自身也会输出断言条数，证明它跑过了。
+    try:
+        import selfcheck
+        _sh = int(cash / s['price'] / 100) * 100 if s.get('price') else 0
+        d['selfcheck'] = selfcheck.check_all(code, shares=_sh or 100,
+                                             snap=s, kline=d.get('kl'))
+    except Exception as _e:
+        d['selfcheck'] = {'code': code, 'fail': [], 'warn': [], 'total': 0, 'pass': 0,
+                          'grade': '?', 'error': repr(_e)}
+
     return d
 
 
@@ -984,6 +1013,28 @@ def rating_hero(sc, notes):
         miss = (f'<div class="warnbox"><b>⚠️ 数据完整度</b>　以下维度取数失败，'
                 f'<b>已按中性计、未参与加减分</b>：{ "、".join(sc["missing"]) }。'
                 f'该维度不提供信息量，本次评级的置信度相应下降。</div>')
+
+    # ---- 自证校验结果（常驻，v1.2.5）----
+    # 不依赖第二数据源的**内部恒等关系**检查：主力=大单+超大单、量额单位、涨停价、费用方向……
+    # 它能在每次取数时都跑（交叉校验做不到——那需要两个源都可用）。
+    _chk = sc.get('selfcheck') or {}
+    chk = ''
+    if _chk.get('fail'):
+        _li = ''.join(f'<li>[{i}] {esc(m)}</li>' for _l, i, m in _chk['fail'])
+        chk = (f'<div class="warnbox"><b>⛔ 自证校验未通过（{len(_chk["fail"])} 项）</b>　'
+               f'以下数据存在 <b>内部矛盾</b>，相关结论不可用，请勿据此决策：'
+               f'<ul style="margin:4px 0 0 16px">{_li}</ul>'
+               f'<span class="tiny">自证校验只检查数据内部是否自洽、不依赖第二数据源，'
+               f'本次共执行 {_chk.get("total", 0)} 项断言。</span></div>')
+    elif _chk.get('warn'):
+        _li = ''.join(f'<li>[{i}] {esc(m)}</li>' for _l, i, m in _chk['warn'])
+        chk = (f'<div class="warnbox"><b>⚠️ 自证校验提示（{len(_chk["warn"])} 项）</b>　'
+               f'可能是正常市况（如竞价期内外盘不等），也可能确有问题，需人工确认：'
+               f'<ul style="margin:4px 0 0 16px">{_li}</ul></div>')
+    elif _chk.get('total'):
+        chk = (f'<div class="tiny" style="margin-top:8px;opacity:.72">'
+               f'✅ 自证校验通过 {_chk["pass"]}/{_chk["total"]} 项断言'
+               f'（内部恒等关系自洽；不依赖第二数据源）</div>')
     body = f'''<div class="htop"><span>模型投资评级 · 100 分制机械打分</span><span class="rt">券商五档口径</span></div>
 <div class="hmain">
   <div>
@@ -1001,7 +1052,7 @@ def rating_hero(sc, notes):
   </div>
 </div>
 <div class="hdims"><div class="hdt">四 维 得 分</div>{dimrows}</div>
-{miss}'''
+{miss}{chk}'''
     return f'<div class="hero">{body}</div>'
 
 
@@ -1260,6 +1311,16 @@ def build(d, notes):
                 f"<p class='tiny'>本次板块基准：{bnames}。"
                 f"主营构成＝业绩与估值锚；板块基准＝资金流向。二者不同源时，涨的是情绪不是业绩。</p>"
                 + warn)
+        # 相对强度对比图（v1.2.5）：把"个股 vs 各所属板块中位"一次画出来。
+        # 视觉重点在**最下面那条**——因为主判据取的是「更不利者」，不是最好看的那个。
+        _items = [(x['name'], x['rel'], 'n=%d%s' % (x.get('n') or 0,
+                                                    '·基准' if x.get('basis') else ''))
+                  for x in d['sectors'] if x.get('rel') is not None]
+        if _items:
+            _items.sort(key=lambda t: t[1])
+            body += SC('相对强度对比（个股涨幅 − 板块中位）',
+                       charts.hbar_svg(_items, title=''),
+                       cnt='自下而上：主判据取最不利者')
         tone = ('warn' if (peer and peer['rel'] is not None and peer['rel'] < 0)
                 else ('ok' if peer else ''))
         A(C('二、板块横向对比', body, tone, badge='铁律第一条'))
@@ -1301,6 +1362,16 @@ def build(d, notes):
                    '<b>限流不可用</b>（实测三主机均返回 <code>rc:100</code> 或空）。'
                    '本节的"近 N 日资金连续性"因此缺失，评级中该项按 0 分计（不计负分）。'
                    '盘中实时主力净额（<code>ulist</code>）不受影响，仍见上文。</p>')
+    # ===== 资金流向（图）=====
+    _fd = d.get('flow_daily') or []
+    if _fd:
+        _ftot = sum(v for _dd, v in _fd)
+        A(C('资金流向',
+            SC('近 14 个交易日主力净额',
+               charts.flow_bars_svg(_fd),
+               cnt='红 = 净流入　绿 = 净流出　合计 %+.0f 万' % _ftot),
+            badge='东财日线口径', tone='warn' if _ftot < 0 else 'ok'))
+
     A(C('三、多空研判', body, tone='warn' if len(nb) > len(pb) else 'ok'))
 
     # ===== 四、技术分析 =====
@@ -1327,8 +1398,15 @@ def build(d, notes):
 <tr><td>60 日位置</td><td><b>{ind['pos60']:.0f}%</b></td><td>{'短期偏高' if ind['pos60'] > 70 else '中低位'}</td></tr>
 <tr><td>250 日位置</td><td>{ind['pos250']:.0f}%</td><td>{'长期偏高' if ind['pos250'] > 70 else '长期仍低'}</td></tr>
 </table>'''
+        # K 线图（v1.2.5）：报告里最直观的一张图，放技术分析卡首位。
+        # ⚠️ 数据键是 d['k']（gather 里已剔除当日未完成根），不是 d['kl']。
+        _kl = d.get('k') or []
+        _chk_k = charts.candlestick_svg(_kl, n=55,
+                                        title='近 55 日 K 线 · MA5/10/20 · 成交量（红涨绿跌）'
+                                        ) if len(_kl) >= 20 else ''
         A(C('四、技术分析',
-            SC('趋势与通道（均线 / BOLL）', t1, cnt='平台参数面板口径')
+            (_chk_k and SC('K 线走势与量能', _chk_k, cnt='近 60 个交易日') or '')
+            + SC('趋势与通道（均线 / BOLL）', t1, cnt='平台参数面板口径')
             + SC('动量与超买超卖（MACD / RSI / CCI / KDJ / WR / MOM）', t2)
             + SC('量能与位置', t3),
             badge='全指标 · 日线级'))
@@ -1381,7 +1459,20 @@ def build(d, notes):
                             for c in hit['cases'][-8:])
                         + '</table>',
                         cnt=f'样本 N={hit["n"]}')
-        A(C('五、历史回测', SC(f'形态统计（{len(d["bt"])} 组内置形态）', t) + cases,
+        # 回测可视化（v1.2.5）—— 视觉重点放在**离散度**上。
+        # 均值 +0.5% 可能是"全部挤在 0 附近"，也可能是"一半 +5% 一半 −4%"；
+        # 对 T+1 隔日模式，后者才是真实风险敞口。所以逐笔画出高低范围与开→收。
+        vis = ''
+        if hit and hit.get('cases'):
+            _cs = [(c['d'][5:], c['open'], c['close'], c['high'], c['low'])
+                   for c in hit['cases'][-8:]]
+            vis += SC('次日表现：逐笔高低范围（看离散度，不只看均值）',
+                      charts.backtest_visual_svg(_cs),
+                      cnt='N=%d' % hit['n'])
+            vis += SC('次日收盘收益分布',
+                      charts.hist_svg([c['close'] for c in hit['cases']]),
+                      cnt='分布越集中越可预期')
+        A(C('五、历史回测', SC(f'形态统计（{len(d["bt"])} 组内置形态）', t) + cases + vis,
             badge='T+1 隔日模式'))
 
     # ===== 六、情景概率 =====

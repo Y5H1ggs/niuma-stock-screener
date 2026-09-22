@@ -108,6 +108,10 @@ def stats(res, s, cost=None, shares=100):
     p = lambda f: sum(1 for r in res if f(r)) / n * 100
     out = {
         'n': n,
+        # ★ 样本充足性标记（v1.2.5 新增）：n<10 时概率**不可外推**。
+        #   实测：某票邻域只剩 N=2，却照样输出"P(收盘涨)=0%"——2 个样本的 0%
+        #   会被读成"必跌"，是典型的**用噪声冒充结论**。调用方必须据此降级展示。
+        'reliable': n >= 10,
         'P_open_up': p(lambda r: r[0] > 0),
         'P_close_up': p(lambda r: r[1] > 0),
         'P_high_ge1': p(lambda r: r[2] >= 1),
@@ -188,7 +192,8 @@ def main():
         print('\n  ⚠️ 邻域样本 N=%d <10 → **不可外推**，以下数字仅供参照。' % len(res))
     st = stats(res, s, cost, shares)
     print('\n' + '=' * 104)
-    print('【采用邻域 %s · N=%d】次日概率分布' % (nm, st['n']))
+    print('【采用邻域 %s · N=%d%s】次日概率分布' % (
+        nm, st['n'], '' if st.get('reliable', True) else '  ⚠️ 样本不足(需≥10)·概率不可外推'))
     print('=' * 104)
     print('  P(开盘上涨)          %5.0f%%      平均开盘 %+.2f%%' % (st['P_open_up'], st['avg_open']))
     print('  P(收盘上涨)          %5.0f%%      平均收盘 %+.2f%%   中位 %+.2f%%' % (
