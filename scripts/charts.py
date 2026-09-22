@@ -106,7 +106,10 @@ def candlestick_svg(kl, n=55, ma=(5, 10, 20), w=W, h=398, title=''):
     pad_l, pad_r = 78, 92
     pad_t = 62 if title else 30
     vol_h = 72
-    price_h = h - pad_t - vol_h - 40
+    # ⚠️ 日期刻度必须独占一条带（date_h）—— 曾把日期文字放在 h-13，
+    # 而成交量柱的基线在 h-16，文字只有 3px 余量 → 直接压在柱子上（P54）。
+    date_h = 30
+    price_h = h - pad_t - vol_h - 40 - date_h
     plot_w = w - pad_l - pad_r
 
     hi = max(r['h'] for r in seg)
@@ -200,10 +203,12 @@ def candlestick_svg(kl, n=55, ma=(5, 10, 20), w=W, h=398, title=''):
     o.append(f'<text x="{pad_l+plot_w+37}" y="{ly2+4.4:.1f}" font-size="{FS_V}" fill="#08131f" '
              f'text-anchor="middle" font-weight="700">{last["c"]:.2f}</text>')
 
-    # 日期刻度（3 个，字号够大）
+    # 日期刻度（3 个）—— 落在 date_h 专带内，与成交量柱彻底分离
     for kk in (0, len(seg) // 2, len(seg) - 1):
         x = pad_l + kk * step + step / 2
-        o.append(f'<text x="{x:.1f}" y="{h-13}" font-size="{FS_S}" fill="{TXT}" '
+        o.append(f'<line x1="{x:.1f}" y1="{vy0+vol_h+6:.1f}" x2="{x:.1f}" '
+                 f'y2="{vy0+vol_h+11:.1f}" stroke="{AXIS}" stroke-width="1" opacity=".65"/>')
+        o.append(f'<text x="{x:.1f}" y="{h-12}" font-size="{FS_S}" fill="{TXT}" '
                  f'text-anchor="middle">{_esc(seg[kk]["d"][5:])}</text>')
 
     o.append('</svg>')

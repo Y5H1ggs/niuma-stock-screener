@@ -916,9 +916,25 @@ CSS = """
   .dimrow:last-child{border-bottom:none;}
   .dimrow .bar{margin:0;}
   .dimrow .num{color:#fff;font-variant-numeric:tabular-nums;text-align:right;font-weight:600;}
-  .hero .warnbox{margin:0 24px 22px;padding:12px 16px;border-radius:10px;
+  .hero .warnbox{margin:14px 24px 22px;padding:12px 16px;border-radius:10px;
         background:rgba(217,166,74,.13);border:1px solid rgba(217,166,74,.32);
         font-size:12.5px;color:#EEDDB8;line-height:1.85;}
+  /* ---------- 本期点评（hero 内，v1.2.6）---------- */
+  .hero .hvbox{margin:0 24px;padding:14px 17px 15px;border-radius:11px;
+        background:rgba(76,201,255,.065);border:1px solid rgba(76,201,255,.22);}
+  .hero .hvt{font-size:11.5px;letter-spacing:1.7px;color:#8FA8C0;margin-bottom:10px;}
+  .hero .hvrate{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;
+        color:#C8D6E5;line-height:1.7;}
+  .hero .hvrate b{color:#fff;font-variant-numeric:tabular-nums;font-weight:700;}
+  .hero .hvrate .hi b{color:#FFC77E;}
+  .hero .hvrate .lo b{color:#FF8A93;}
+  .hero .hvbase{margin-left:auto;color:#8FA8C0;font-size:11.5px;}
+  .hero .hvb{font-size:12.5px;color:#B9CBDC;line-height:1.9;margin-top:9px;}
+  .hero .hvb b{color:#E4C77E;font-weight:700;}
+  /* 自证校验页脚：右对齐 + 深底专用浅色（原先误用浅底 --muted，深蓝上几乎看不见） */
+  .hero .hchk{margin:15px 24px 22px;text-align:right;font-size:12px;
+        color:#8FA8C0;line-height:1.8;letter-spacing:.2px;}
+  .hero .hchk b{color:#7FD9A8;font-variant-numeric:tabular-nums;font-weight:700;}
 
   /* ---------- 评级理由条目 ---------- */
   .ri{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;
@@ -1032,9 +1048,35 @@ def rating_hero(sc, notes):
                f'可能是正常市况（如竞价期内外盘不等），也可能确有问题，需人工确认：'
                f'<ul style="margin:4px 0 0 16px">{_li}</ul></div>')
     elif _chk.get('total'):
-        chk = (f'<div class="tiny" style="margin-top:8px;opacity:.72">'
-               f'✅ 自证校验通过 {_chk["pass"]}/{_chk["total"]} 项断言'
+        chk = (f'<div class="hchk">'
+               f'✅ 自证校验通过 <b>{_chk["pass"]}/{_chk["total"]}</b> 项断言'
                f'（内部恒等关系自洽；不依赖第二数据源）</div>')
+
+    # ---- 本期点评（v1.2.6）----
+    # 用**四维达成率**（得分 ÷ 满分）机械生成，只做一件事：把"最低的那一维"指出来。
+    # 刻意不写成主观研判长句 —— 那会和「评级理由卡」重复，也容易滑向抒情。
+    verdict = ''
+    if nr:
+        verdict = ('<div class="hvbox"><div class="hvt">本 期 点 评</div>'
+                   '<div class="hvb">资金面与板块面均取数失败，本报告<b>不提供评级</b>。'
+                   '对缺失维度按基准分计入会把总分拉向"中性档"——那是默认值、不是判断，'
+                   '因此本次只用下方的技术面、盘口与情景分析作答。</div></div>')
+    else:
+        _p = [(nm, (got / mx * 100 if mx else 0.0)) for nm, got, mx, _ in sc['dims']]
+        _lo = min(_p, key=lambda x: x[1])
+        _hi = max(_p, key=lambda x: x[1])
+        _cells = ''.join(
+            '<span class="%s">%s <b>%.0f%%</b></span>'
+            % ('hi' if nm == _hi[0] else ('lo' if nm == _lo[0] else ''), nm, v)
+            for nm, v in _p)
+        verdict = (f'<div class="hvbox"><div class="hvt">本 期 点 评</div>'
+                   f'<div class="hvrate">{_cells}'
+                   f'<span class="hvbase">达成率 = 得分 ÷ 满分　基准线 50%</span></div>'
+                   f'<div class="hvb">四维达成率最高为「{_hi[0]}」{_hi[1]:.0f}%、'
+                   f'最低为「{_lo[0]}」{_lo[1]:.0f}%　→　'
+                   f'<b>{_lo[0]}是本次评级的主要拖累项</b>。'
+                   f'点评由四维分数机械生成，用于快速定位短板，不含人工调整，'
+                   f'也不构成任何买卖指令。</div></div>')
     body = f'''<div class="htop"><span>模型投资评级 · 100 分制机械打分</span><span class="rt">券商五档口径</span></div>
 <div class="hmain">
   <div>
@@ -1052,7 +1094,7 @@ def rating_hero(sc, notes):
   </div>
 </div>
 <div class="hdims"><div class="hdt">四 维 得 分</div>{dimrows}</div>
-{miss}{chk}'''
+{verdict}{miss}{chk}'''
     return f'<div class="hero">{body}</div>'
 
 
