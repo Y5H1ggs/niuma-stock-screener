@@ -26,6 +26,12 @@ scripts/_*.py
 # 单次分析的人工研判输入（与生成的 HTML 报告成对，属产物不进仓库）
 *_notes.json
 
+# 本地视觉验收产物（把 PDF 渲染成逐页 PNG 看图用；见 pitfalls P61）
+# ⚠️ 教训：这类目录若不显式忽略，git add -A 会把它们一起提交（本次曾误提交 13 张 PNG）
+_pdf_*/
+_v_*/
+_pdfpng/
+
 # 编辑器 / 系统
 .vscode/
 .idea/
