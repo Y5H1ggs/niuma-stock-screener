@@ -14,7 +14,9 @@
 用法：
     python scripts/check_privacy.py              # 扫描暂存区（pre-commit 钩子用）
     python scripts/check_privacy.py --all        # 扫描工作区全部受版本控制的文件
-    python scripts/check_privacy.py --terms F   # 指定禁词文件
+    python scripts/check_privacy.py --msg FILE   # 扫描一条提交信息（commit-msg 钩子用）
+    python scripts/check_privacy.py --history    # 审计全部历史提交信息
+    python scripts/check_privacy.py --terms F    # 指定禁词文件
 
 退出码：0 = 通过；1 = 命中禁词（阻断提交）
 """
@@ -57,18 +59,71 @@ def tracked_files():
     return [f for f in (r.stdout or '').splitlines() if f.strip()]
 
 
+def scan_text(txt, terms, label):
+    return [(label, t, '禁词') for t in terms if t in txt]
+
+
 def main():
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     all_mode = '--all' in sys.argv
+    hist_mode = '--history' in sys.argv
+    msg_file = None
     tpath = TERMS
     for i, a in enumerate(sys.argv):
         if a == '--terms' and i + 1 < len(sys.argv):
             tpath = sys.argv[i + 1]
+        if a == '--msg' and i + 1 < len(sys.argv):
+            msg_file = sys.argv[i + 1]
 
     terms = load_terms(tpath)
     if terms is None:
         print('  ⚠️ 未找到禁词文件 %s —— 只跑结构性规则（建议创建它以保证覆盖）' % tpath)
         terms = []
+
+    # ---- 模式 A：提交信息（commit-msg 钩子用）----
+    # 为什么要单独挂一个钩子：pre-commit 只看得见**文件内容**，看不见**提交信息**，
+    # 而提交信息同样是公开的。本项目实测过这个洞 —— 为了说明"移除了什么"，
+    # 把被删的原值又在提交信息里复述了一遍，等于换个地方再泄露一次。
+    if msg_file:
+        try:
+            raw = open(msg_file, encoding='utf-8', errors='replace').read()
+        except Exception as e:
+            print('  ⚠️ 无法读取提交信息 %s：%s' % (msg_file, e))
+            return 0
+        body = '\n'.join(l for l in raw.splitlines() if not l.lstrip().startswith('#'))
+        hits = scan_text(body, terms, 'COMMIT_MSG')
+        if not hits:
+            print('  ✅ 提交信息未含敏感词（对照 %d 条禁词）' % len(terms))
+            return 0
+        print('  ❌ 提交信息命中 %d 处，已阻断提交：' % len(hits))
+        for _, what, _why in hits:
+            print('     COMMIT_MSG  %s' % what)
+        print()
+        print('  处理方式：只描述**处理方式与文件清单**，绝不引用被移除的原值。')
+        print('  紧急绕过：git commit --no-verify')
+        return 1
+
+    # ---- 模式 B：审计全部历史提交信息（改不了，只能重写历史）----
+    if hist_mode:
+        r = subprocess.run(['git', 'log', '--all', '--format=%H%x1f%s%n%b%x1e'],
+                           capture_output=True, text=True, cwd=ROOT)
+        recs = [x for x in (r.stdout or '').split('\x1e') if x.strip()]
+        print('  审计 %d 条历史提交信息 × %d 条禁词' % (len(recs), len(terms)))
+        hits = []
+        for rec in recs:
+            if '\x1f' not in rec:
+                continue
+            sha, body = rec.split('\x1f', 1)
+            for t in terms:
+                if t in body:
+                    hits.append((sha[:8], t))
+        if not hits:
+            print('  ✅ 历史提交信息未含敏感词')
+            return 0
+        print('  ❌ 命中 %d 处（历史信息无法就地修改，需重写历史或删库重建）：' % len(hits))
+        for sha, what in hits:
+            print('     %-10s %s' % (sha, what))
+        return 1
 
     files = tracked_files() if all_mode else staged_files()
     files = [f for f in files if not f.lower().endswith(SKIP_EXT)]
