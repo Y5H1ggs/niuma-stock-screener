@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 选股分析牛马工具 contributors
+Copyright (c) 2026 Y5H1ggs
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,16 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
---------------------------------------------------------------------------
-附加声明 / Additional Notice
-
-本项目的策略、指标、评级与回测内容**仅供个人研究与学习使用，
-不构成任何投资建议**。所有数据来自第三方公开接口，可能存在延迟、
-缺失或错误。据此进行任何交易，风险自负。
-
-The trading strategies, indicators, ratings and backtest results in this
-project are for personal research and educational purposes only and do NOT
-constitute investment advice. All market data is retrieved from public
-third-party APIs and may be delayed, incomplete or inaccurate. Use at your
-own risk.

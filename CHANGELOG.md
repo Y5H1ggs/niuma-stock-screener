@@ -9,6 +9,25 @@
 
 ---
 
+## v1.2.1 — 2026-09-22 · 仓库元信息规范化
+
+- **License 修正（NOASSERTION 根因）**：`LICENSE` 原本**已经是 MIT 标准正文**，
+  但在末尾附加了一段自定义"仅供个人研究"声明。GitHub 的协议识别器要求 `LICENSE`
+  必须是**纯净全文**，附加段落导致它直接放弃识别（仓库页显示 `NOASSERTION`）。
+  → 已把附加声明移出，`LICENSE` 恢复纯净 MIT；声明并入 README「许可与免责声明」。
+  **规则**：授权文件必须纯净，附加声明放文档 —— 混在一起会让**两边都失效**。
+  版权行由 `选股分析牛马工具 contributors` 改为 `Y5H1ggs`。
+- **README 新增 v1.3 计划**：按「**先补可信度、再补功能**」排序共 10 项
+  （自证校验常驻化 / PIT 扩样重跑 / 预测台账自动化 / 封板质量入评分 / 情绪周期状态机 /
+  主线迁移跟踪 / 时点提醒 / 报告图表化 / 形态 DSL 扩展 / 积累 30 笔样本）；
+  并显式写出**明确不做的事**（付费深度行情 · 自动下单 · 荐股式推荐），避免预期错位。
+- **GitHub Topics 已设置**（10 个：a-share / agent-skill / eastmoney / python / quant /
+  stock-analysis / stock-screener / t1 / technical-analysis / trading-strategy）。
+  ⚠️ Topics **不在 Settings 里**，入口在仓库首页右侧 About 区块的齿轮图标；
+  本次通过 REST API `PUT /repos/{owner}/{repo}/topics` 设置（**全量替换**语义）。
+
+---
+
 ## v1.2.0 — 2026-09-22 · 路线图 P0/P1/P2 落地 + 自升级机制
 
 依据 `README.md` 第六节路线图实施。核心目标：压缩 **Gap = 纸面可得的收益 − 纪律可执行后的真实收益**。
