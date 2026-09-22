@@ -166,7 +166,16 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
 
 # ---------------------------------------------------------------- 3. 个股资金（东财 ulist.np）
 def ulist(codes, fields='f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87'):
-    """实时资金口径。f62 主力净额 f66 超大单 f72 大单 f78 中单 f84 小单 f184 净占比%。"""
+    """实时资金口径，返回 {代码: 字段dict}。f62 主力净额 f66 超大单 f72 大单 f78 中单 f84 小单 f184 净占比%。
+
+    ⚠️ `codes` 既可传**代码列表**，也可传**单个代码字符串**（P58）。
+       曾只接受列表：传字符串时它把每个字符当成一个代码去拼 secids，
+       接口返回空 data → 返回 `{}`，而调用方 `.get('f62') or 0` 只会看到 **0**，
+       表现为"当日主力净额 = 0 万"这种**看起来完全正常的错误数据**
+       （与 P55 同类：不报错、数字自洽、只是悄悄错）。字符串现在自动包成单元素列表。
+    """
+    if isinstance(codes, str):
+        codes = [codes]
     secids = ','.join(secid(c) for c in codes)
     url = f'https://push2.eastmoney.com/api/qt/ulist.np/get?secids={secids}&fields={fields}&ut={UT}'
     r = get(url)

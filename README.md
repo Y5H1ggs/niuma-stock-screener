@@ -204,6 +204,7 @@ python backtest.py 600000
 python report.py 600000 --title 深度分析
 python report.py 600000 --title 午盘深度分析 --notes notes.json --sector-top 4
 python report.py 600000 --pdf                       # 额外导出 PDF（复用本机 Chrome）
+python report.py 600000 --anon                      # 脱敏版：不含账户资金与持仓口径（发给别人时用）
 
 # 6) 次日涨跌概率（形态邻域回测；开 / 收 / 盘中三口径**分开报**）
 python predict.py 600000 --cost 10.00
