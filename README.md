@@ -114,7 +114,7 @@
 | `examples/report_template.md` | 五段式**文本**输出模板（用于对话内输出） |
 | `examples/notes_sample.json` | `report.py --notes` 的人工研判注入样例 |
 
-### 本仓库自身的隐私闸门（给贡献者）
+### 本仓库自身的隐私闸门
 
 这是个**公开**仓库，所以 `.githooks/` 里放了两个提交钩子 —— 提交前自动扫一遍，命中就阻断：
 
