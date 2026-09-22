@@ -98,8 +98,12 @@ def neighbourhood(k, t, rsi_bw=8, pctb_bw=15, cci_bw=80, require_ma=True):
             continue
         buy = k[i]['c']
         nx = k[i + 1]
+        # ⚠️ 第 5 个元素必须是【信号日】日期，不是次日日期（P62）。
+        #    它后面紧跟的是**信号日**的指标与涨跌幅，两者必须同源；
+        #    曾误存 nx['d']（次日），于是案例列表印出"2026-09-22 涨+10.00%"这种
+        #    自相矛盾的行——涨跌幅是 09-21 的，日期却写成 09-22（那天实际只涨 1.36%）。
         res.append(((nx['o'] / buy - 1) * 100, (nx['c'] / buy - 1) * 100,
-                    (nx['h'] / buy - 1) * 100, (nx['l'] / buy - 1) * 100, nx['d'], f))
+                    (nx['h'] / buy - 1) * 100, (nx['l'] / buy - 1) * 100, k[i]['d'], f))
     return res
 
 
@@ -207,9 +211,9 @@ def main():
     if 'P_touch_breakeven' in st:
         print('  P(次日盘中触及保本价 %.2f%%) %5.0f%%   (成本 %.3f)' % (
             st['need_pct'], st['P_touch_breakeven'], cost))
-    print('\n  最近 10 个邻域案例：')
+    print('\n  最近 10 个邻域案例（**信号日** → 次日实际表现；不含费用）：')
     for o, c2, h, l2, d, f in res[-10:]:
-        print('    %s 涨%+6.2f%% RSI%5.1f %%B%5.1f → 次日 开%+6.2f%% 收%+6.2f%% 高%+6.2f%% 低%+6.2f%%'
+        print('    信号日 %s（涨%+6.2f%% RSI%5.1f %%B%5.1f）→ 次日 开%+6.2f%% 收%+6.2f%% 高%+6.2f%% 低%+6.2f%%'
               % (d, f['chg'], f['rsi14'], f['pctb'], o, c2, h, l2))
     print('\n  ⚠️ 以上为**基准分布**，未含板块资金/情绪修正。必须与 fflow(资金) / board_index(板块) / mood(情绪) 一并判读。')
     print('  ⚠️ 样本量 %d，区间含多段不同市况，换环境适用性下降；不含费用（双边约 0.15~0.2%%）。' % st['n'])
