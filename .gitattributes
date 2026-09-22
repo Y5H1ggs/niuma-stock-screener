@@ -1,0 +1,6 @@
+# 钩子脚本必须是 LF 结尾。
+# 为什么单独声明：Windows 上 core.autocrlf=true 时，checkout 会把文本文件转成 CRLF，
+# 而 CRLF 的 shell 脚本会让 sh 报 `\r: command not found` —— 钩子会**静默失效**
+# （提交照常成功，闸门却什么都没查）。实测过这个 warning，故在此显式钉死。
+.githooks/* text eol=lf
+*.sh        text eol=lf
