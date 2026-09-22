@@ -840,18 +840,36 @@ CSS = """
   h1{font-size:23px;font-weight:600;margin:0 0 6px;}
 
   /* ---------- 报头 ---------- */
-  .mast{display:flex;align-items:flex-end;justify-content:space-between;gap:26px;flex-wrap:wrap;
+  .mast{display:flex;align-items:center;justify-content:space-between;gap:20px 26px;flex-wrap:wrap;
         padding:0 2px 18px;border-bottom:1px solid var(--line);}
-  .mast h1{font-size:27px;font-weight:700;letter-spacing:.5px;margin:0;color:#101825;}
+  .mast h1{font-size:27px;font-weight:700;letter-spacing:.5px;margin:0;color:#101825;
+        display:flex;align-items:baseline;flex-wrap:wrap;}
   .mast h1 .code{font-size:18px;font-weight:500;color:var(--faint);margin-left:8px;letter-spacing:1.5px;}
   .mast h1 .kind{font-size:12px;font-weight:500;color:var(--gold);background:var(--goldsoft);
         border:1px solid var(--goldline);border-radius:999px;padding:3px 12px;margin-left:12px;
-        vertical-align:middle;letter-spacing:.5px;position:relative;top:-3px;}
+        vertical-align:middle;letter-spacing:.5px;position:relative;top:-3px;
+        /* 徽章必须整体不折行：曾因外层限宽而被拆成「…深度分 / 析」，后半段还跑出了圆角底 */
+        flex:0 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .mast .tagline{font-size:12.5px;color:var(--muted);margin-top:9px;line-height:1.95;}
   .mast .tagline b{color:var(--ink2);font-weight:600;}
   .px{text-align:right;padding-bottom:2px;flex:none;}
   .px .p{font-size:30px;font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
   .px .c{font-size:14px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums;}
+  /* ---------- 抬头卡右栏（v1.2.8）----------
+     旧版右侧只有一个价格块，而左侧 tagline 很长会撑满整行 → 价格块被 flex-wrap 挤到
+     第二行左端，抬头卡**右上角整片空白**。现改为「价格 + 4 项关键指标」两栏结构：
+     左栏限定 flex 基准并允许收缩（min-width:0），右栏固定不换行。 */
+  .mast .mastl{flex:1 1 46%;min-width:0;}
+  .mast .mastr{display:flex;align-items:center;gap:22px;flex:0 1 auto;}
+  .mast .mkgrid{display:grid;grid-template-columns:repeat(2,minmax(86px,auto));
+        gap:10px 20px;border-left:1px solid var(--line);padding-left:20px;}
+  .mast .mk{display:flex;flex-direction:column;gap:3px;}
+  .mast .mk .k{font-size:10.5px;color:var(--muted);letter-spacing:.5px;white-space:nowrap;}
+  .mast .mk .v{font-size:14px;font-weight:700;color:var(--ink);
+        font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .mast .mk .v.up{color:var(--up);}
+  .mast .mk .v.dn{color:var(--dn);}
+  .mast .mk .v.gold{color:#A9843F;}
 
   /* ---------- 卡片 ---------- */
   .card{background:var(--card);border:1px solid var(--line);border-radius:15px;
@@ -931,8 +949,8 @@ CSS = """
   .hero .hvrate{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12.5px;
         color:#C8D6E5;line-height:1.7;}
   .hero .hvrate b{color:#fff;font-variant-numeric:tabular-nums;font-weight:700;}
-  .hero .hvrate .hi b{color:#FFC77E;}
-  .hero .hvrate .lo b{color:#FF8A93;}
+  .hero .hvrate .hvup b{color:#FFC77E;}
+  .hero .hvrate .hvlo b{color:#FF8A93;}
   .hero .hvbase{margin-left:auto;color:#8FA8C0;font-size:11.5px;}
   .hero .hvb{font-size:12.5px;color:#B9CBDC;line-height:1.9;margin-top:9px;}
   .hero .hvb b{color:#E4C77E;font-weight:700;}
@@ -983,6 +1001,21 @@ CSS = """
   .tiny{font-size:12px;color:var(--muted);line-height:1.85;}
   code{background:#F2F0EA;border-radius:4px;padding:1px 5px;font-size:12px;
        font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+
+  /* ---------- 打印 / 导出 PDF（v1.2.8）----------
+     ⚠️ 必须显式声明 print-color-adjust:exact —— 浏览器打印**默认不输出背景色**，
+        而本报告的 hero 评级卡与全部图表都是「深底浅字」。一旦背景被丢弃，
+        浅色文字会落在白纸上 = 白底白字，整页不可读（且文件大小正常，看不出问题）。
+     另：卡片不许跨页断开，标题行不许与正文分离。 */
+  *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;}
+  @page{size:A4;margin:11mm 9mm 13mm;}
+  @media print{
+    body{padding:0;background:#fff;}
+    .wrap{max-width:none;}
+    .card,.sub,.hero,.kpi,.ri,.warnbox,svg{break-inside:avoid;page-break-inside:avoid;}
+    .cardhead,.st,.hdt{break-after:avoid;page-break-after:avoid;}
+    a{color:var(--ink2);text-decoration:none;}
+  }
 """
 
 
@@ -1070,9 +1103,12 @@ def rating_hero(sc, notes):
         _p = [(nm, (got / mx * 100 if mx else 0.0)) for nm, got, mx, _ in sc['dims']]
         _lo = min(_p, key=lambda x: x[1])
         _hi = max(_p, key=lambda x: x[1])
+        # ⚠️ 类名必须与报告已有的工具类**不重名**：曾用 .hi/.lo，而报告里已有
+        #    全局 `.hi{background:#FBF3DE}`（浅金标签），导致点评里的最高项
+        #    白捡了一块浅金底色。改用 hvup/hvlo 命名空间。
         _cells = ''.join(
             '<span class="%s">%s <b>%.0f%%</b></span>'
-            % ('hi' if nm == _hi[0] else ('lo' if nm == _lo[0] else ''), nm, v)
+            % ('hvup' if nm == _hi[0] else ('hvlo' if nm == _lo[0] else ''), nm, v)
             for nm, v in _p)
         verdict = (f'<div class="hvbox"><div class="hvt">本 期 点 评</div>'
                    f'<div class="hvrate">{_cells}'
@@ -1160,6 +1196,30 @@ def build(d, notes):
         sc_rows = [tuple(x) for x in notes['scenarios']]
     sc = score(d, notes)
 
+    # ---- 抬头卡右栏的 4 项关键指标（v1.2.8）----
+    # 只放「一眼定调」的四个数：评级 / 当日主力 / 相对强度（更不利者）/ 250 日位置。
+    # 取不到就印「不可用」，绝不留空、也绝不用 0 冒充（见 P58）。
+    _pk = pick_sectors(d)[1]
+    _zl = (d.get('flow') or {}).get('zl')
+    _r2c = {'买入': 'up', '增持': 'up', '中性': 'gold', '减持': 'dn', '卖出': 'dn'}
+    _mk = []
+    _mk.append(('模型评级',
+                f'{sc["rating"]} {sc["total"]}' if sc.get('total') else sc['rating'],
+                _r2c.get(sc['rating'], '')))
+    if _zl is None:
+        _mk.append(('当日主力', '不可用', ''))
+    else:
+        _mk.append(('当日主力', money(_zl), 'up' if _zl > 0 else ('dn' if _zl < 0 else '')))
+    if _pk and _pk.get('rel') is not None:
+        _rr = _pk['rel']
+        _mk.append(('相对强度', f'{_rr:+.2f}pp', 'up' if _rr > 0 else ('dn' if _rr < 0 else '')))
+    else:
+        _mk.append(('相对强度', '不可用', ''))
+    _p250 = ind.get('pos250')
+    _mk.append(('250日位置', f'{_p250:.1f}%' if isinstance(_p250, (int, float)) else '不可用', ''))
+    _mkhtml = ''.join(f'<div class="mk"><span class="k">{esc(k)}</span>'
+                      f'<span class="v {c}">{esc(v)}</span></div>' for k, v, c in _mk)
+
     H = []
     A = H.append
     A(f'''<!DOCTYPE html>
@@ -1174,15 +1234,18 @@ def build(d, notes):
 <div class="wrap">
 
 <div class="mast">
-  <div>
+  <div class="mastl">
     <h1>{esc(name)}<span class="code">{code}</span><span class="kind">{esc(title)}</span></h1>
     <div class="tagline">数据时点 <b>{snap_date} {hm}</b>（{sess}）　·　
 {'沪市' if str(code).startswith('6') else '深市'}　·　
 {esc(notes.get('subtitle') or '实时数据 + 板块横向对比 + 历史形态回测')}</div>
   </div>
-  <div class="px">
-    <div class="p {cls(s['chg'])}">{s['price']}</div>
-    <div class="c {cls(s['chg'])}">{pct(s['chg'])}</div>
+  <div class="mastr">
+    <div class="px">
+      <div class="p {cls(s['chg'])}">{s['price']}</div>
+      <div class="c {cls(s['chg'])}">{pct(s['chg'])}</div>
+    </div>
+    <div class="mkgrid">{_mkhtml}</div>
   </div>
 </div>
 ''')
