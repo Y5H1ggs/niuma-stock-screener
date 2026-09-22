@@ -506,15 +506,37 @@ def kline_qq(code, n=800):
 
 
 def kline(code, n=260):
-    """统一入口：东财 → 新浪 → 腾讯，逐级降级。"""
+    """统一入口：东财 → 新浪 → 腾讯，逐级降级。
+    返回 **二元组** `([{d,o,c,h,l,v}], 'eastmoney'|'sina'|'tencent')` —— 注意不是列表。
+
+    ⚠️ 本接口是本项目**最容易误用**的一个（P55），因为用错时**不报错**：
+       `charts.candlestick_svg(ds.kline(c))` 拿到的是 2 元素元组，长度检查通过，
+       遍历时元素是 'eastmoney' 字符串 → 最终**静默渲染出一张空白图**；
+       喂给 `indicators()` 则报 `string indices must be integers`（那个报错也看不出真因）。
+       选哪个：
+         · 只要 K 线数组 → `kline_list(code, n)`
+         · 同时要数据源名 → `k, src = kline_src(code, n)`
+    """
     k = kline_em(code, lmt=n)
     if k:
         return k, 'eastmoney'
     k = kline_sina(code, datalen=n)
     if k:
         return k, 'sina'
-    k = kline_qq(code, n=n)
-    return k, 'tencent'
+    return kline_qq(code, n=n), 'tencent'
+
+
+# 语义别名：名字里点明"返回值带数据源名"，避免调用方以为它只给数组
+kline_src = kline
+
+
+def kline_list(code, n=260):
+    """统一入口，**只返回 K 线数组** [{d,o,c,h,l,v}]（丢掉源名）。
+
+    等价于 `kline(code, n)[0]`，但返回值类型不可能被误当成元组。
+    画图 / 算指标一律用这个。
+    """
+    return kline(code, n)[0]
 
 
 # ---------------------------------------------------------------- 7. 情绪温度
@@ -717,7 +739,7 @@ def announce_calendar(code, fin=None):
 
 
 __all__ = ['snapshot', 'clist', 'ulist', 'fflow', 'fflow_at', 'slist', 'sector_members',
-           'sector_stats', 'kline_em', 'kline_sina', 'kline_qq', 'kline', 'mood',
+           'sector_stats', 'kline_em', 'kline_sina', 'kline_qq', 'kline', 'kline_src', 'kline_list', 'mood',
            'ma', 'ema', 'rsi', 'boll', 'macd', 'cci', 'kdj', 'wr', 'mom', 'pos',
            'indicators', 'allowed', 'secid', 'tsym', 'n100', 'get', 'UT', 'MARKET_MAIN',
            'financials', 'fundamentals_at', 'announce_calendar']
