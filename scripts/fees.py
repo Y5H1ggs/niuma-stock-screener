@@ -14,7 +14,7 @@
 
 用法：
   python fees.py                       # 全景分析
-  python fees.py --cash 5,000         # 针对特定可用资金
+  python fees.py --cash 5000           # 针对特定可用资金
 """
 import sys
 import io

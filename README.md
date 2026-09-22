@@ -209,15 +209,15 @@ python report.py 600000 --pdf                       # 额外导出 PDF（复用�
 python report.py 600000 --anon                      # 脱敏版：不含账户资金与持仓口径（发给别人时用）
 
 # 6) 次日涨跌概率（形态邻域回测；开 / 收 / 盘中三口径**分开报**）
-python predict.py 600000 --cost 10.00
+python predict.py 600000 --cost 10.00   # --cost 传建仓成本（此处为示例值）
 
 # 7) 交易前风控审查（账户级）
 python risk.py status            # 当前回撤 / 熔断状态 / 风险预算
 python risk.py check 600000      # 这笔允许开吗、建议多少股
 
 # 8) 台账与校准（「后续都需要校准」的执行体）
-python journal.py add   --code 600000 --name 标的甲 --price 10.00 --shares 800
-python journal.py close --id 20260916-600000 --price 10.20 --reason board_break
+python journal.py add   --code 600000 --name 示例标的 --price 10.00 --shares 500
+python journal.py close --id 20260105-600000 --price 10.20 --reason take_profit
 python calibrate.py all          # 业绩归因 / 止损执行率 / 预测校准 / 参数建议
 
 # 9) 诊断类（怀疑数据或结论时先跑这些）
