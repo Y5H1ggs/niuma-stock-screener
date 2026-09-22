@@ -6,7 +6,7 @@
 > 名字来源：干活的牛马自己给自己写工具。**不装任何 pip 包**，纯标准库跑通全链路。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.9`（2026-09-22）　·　许可 MIT　·　完整版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.3.0`（2026-09-22）　·　许可 MIT　·　完整版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
@@ -106,10 +106,32 @@
 | `scripts/health.py` | 数据源健康自检 + 当日结论置信度 |
 | `scripts/selfcheck.py` | **自证校验**：不依赖第二数据源的**内部恒等关系**断言（主力=大单+超大单、量额单位、涨停价、费用方向…），已**常驻**接入 `report.py` |
 | `scripts/smoketest.py` | **随机票全链路冒烟 + 已知错误模式扫描**（改完代码先跑它） |
+| `scripts/check_privacy.py` | **提交前隐私闸门**（纯标准库）：四种模式 —— 暂存区 / 提交信息 / 全量 / 历史审计；**禁词清单放在仓库外**，避免"禁词本身被提交" |
+| `scripts/install_hooks.py` | **一条命令重装隐私闸门钩子 + 端到端自检**（`.git/hooks` 不进版本库，换机器 / 重新 clone 后必须重装） |
+| `scripts/md2html.py` | 把 `.md` 渲染成**自包含单文件 HTML**（可预览 / 可打印，代码块带「复制」按钮，无外链依赖） |
 | `scripts/factors.py` | **量化因子挖掘**：33 个因子的横截面 IC / ICIR / t 值 / 胜率 / 分组单调性（财务因子强制走 PIT） |
 | `scripts/charts.py` | **纯 SVG 图表**（零依赖 / 无 JS / 可导出 PDF）：K线+均线+成交量、资金流柱状、板块相对强度对比、**回测逐笔高低范围**、收益分布直方图；深色仪表盘风格，涨红跌绿 |
 | `examples/report_template.md` | 五段式**文本**输出模板（用于对话内输出） |
 | `examples/notes_sample.json` | `report.py --notes` 的人工研判注入样例 |
+
+### 本仓库自身的隐私闸门（给贡献者）
+
+这是个**公开**仓库，所以 `.githooks/` 里放了两个提交钩子 —— 提交前自动扫一遍，命中就阻断：
+
+```bash
+python scripts/install_hooks.py          # 安装 + 自检（新机器 / 新 clone 后跑一次）
+python scripts/install_hooks.py --check  # 只体检，不改动
+```
+
+| 钩子 | 管什么 |
+|---|---|
+| `pre-commit` | **文件内容** |
+| `commit-msg` | **提交信息** —— `pre-commit` 根本看不到它，而它同样是公开的 |
+
+三条设计约束：
+1. **禁词清单放仓库外**（`_privacy_terms.txt`，已 gitignore）—— 把"要禁的字符串"写进一个会被提交的文件，等于把禁词又公开一次；
+2. **找不到 python 解释器时按失败处理**，不静默跳过 —— "看起来装了、其实没在工作"的闸门比没有更危险；
+3. **装完自检两个方向**：含禁词的信息要被拦（能拦）、正常信息要放行（能放）。只测一边等于没测。
 
 ---
 

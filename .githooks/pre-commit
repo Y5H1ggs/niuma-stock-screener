@@ -1,0 +1,33 @@
+#!/bin/sh
+# 隐私闸门 · 文件内容（pre-commit）
+#
+# ⚠️ 本文件是**模板**，受版本控制；真正生效的是 `.git/hooks/pre-commit`（不进版本库）。
+#    安装/重装：python scripts/install_hooks.py
+#    安装时会在本文件开头注入一行 PRIVACY_PYTHON=<本机解释器绝对路径>
+#    —— 这样本机路径不会写进公开仓库。
+#
+# 为什么要有它：**.git/hooks 不进版本库**。换机器、重新 clone 之后闸门会**无声消失**，
+# 而提交照常成功 —— 这正是"闸门看起来装了、其实没在工作"的形态。
+
+PRIVACY_PYTHON="${PRIVACY_PYTHON:-}"
+if [ -z "$PRIVACY_PYTHON" ]; then
+  for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1; then PRIVACY_PYTHON="$c"; break; fi
+  done
+fi
+
+if [ -z "$PRIVACY_PYTHON" ]; then
+  echo "  [privacy gate] 找不到 python 解释器，闸门无法运行 —— 按失败处理（不静默跳过）。"
+  echo "  修：装 python，或 export PRIVACY_PYTHON=<解释器路径>，或 python scripts/install_hooks.py"
+  echo "  临时绕过：git commit --no-verify"
+  exit 1
+fi
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 1
+cd "$ROOT" || exit 1
+
+"$PRIVACY_PYTHON" scripts/check_privacy.py || {
+  echo "  [privacy gate] 文件内容命中敏感词 —— 提交已阻断。"
+  echo "  临时绕过：git commit --no-verify"
+  exit 1
+}

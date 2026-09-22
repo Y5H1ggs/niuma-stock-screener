@@ -1,0 +1,35 @@
+#!/bin/sh
+# 隐私闸门 · 提交信息（commit-msg）
+#
+# ⚠️ 本文件是**模板**，受版本控制；真正生效的是 `.git/hooks/commit-msg`（不进版本库）。
+#    安装/重装：python scripts/install_hooks.py
+#
+# 为什么单独挂这个钩子：pre-commit 只看得到**文件内容**，看不到**提交信息**，
+# 而提交信息同样是公开的。本项目实测过这个洞 —— 为说明"移除了什么"，
+# 把被删的原值又在提交信息里复述了一遍，等于换个地方再泄露一次。
+# 所以"提交信息"必须有自己的闸门，不能指望 pre-commit 顺带管。
+
+PRIVACY_PYTHON="${PRIVACY_PYTHON:-}"
+if [ -z "$PRIVACY_PYTHON" ]; then
+  for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1; then PRIVACY_PYTHON="$c"; break; fi
+  done
+fi
+
+if [ -z "$PRIVACY_PYTHON" ]; then
+  echo "  [privacy gate] 找不到 python 解释器，闸门无法运行 —— 按失败处理（不静默跳过）。"
+  echo "  修：装 python，或 export PRIVACY_PYTHON=<解释器路径>，或 python scripts/install_hooks.py"
+  echo "  临时绕过：git commit --no-verify"
+  exit 1
+fi
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 1
+cd "$ROOT" || exit 1
+
+# $1 = 本次提交信息文件（.git/COMMIT_EDITMSG）
+"$PRIVACY_PYTHON" scripts/check_privacy.py --msg "$1" || {
+  echo "  [privacy gate] 提交信息命中敏感词 —— 提交已阻断。"
+  echo "  口径：只描述**处理方式与文件清单**，绝不引用被移除的原值。"
+  echo "  临时绕过：git commit --no-verify"
+  exit 1
+}
