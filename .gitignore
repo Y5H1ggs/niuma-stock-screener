@@ -43,3 +43,6 @@ pool.json
 pool_deep.json
 scripts/pool.json
 scripts/pool_deep.json
+
+# 隐私闸门禁词清单（**不入仓库**：写进去等于把禁词又公开一次）
+_privacy_terms.txt
