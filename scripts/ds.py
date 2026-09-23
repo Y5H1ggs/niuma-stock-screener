@@ -34,16 +34,62 @@ MARKET_BOARD = 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23'   # 同上；如需纯主板�
 EMOTION_BK = {'昨日涨停': 'BK0815', '昨日首板': 'BK1630', '昨日连板': 'BK0816'}
 
 
+# ---------------- 连接级熔断器（P75）----------------
+# 背景：实测 `*.push2*.eastmoney.com` 全族被连接级阻断时（HTTP 000、0.2 秒内 RST），
+#       `board_index()` 仍会发起 8 页 × 4 主机 = 32 次 get()，实测耗时 **234 秒**，
+#       而且持续请求只会延长阻断。熔断后本次运行快速失败。
+_BREAK = {'fails': 0, 'until': 0.0, 'tripped': False, 'hosts': set(), 'short_circuited': 0}
+BREAK_AFTER = 8         # 连续失败多少次触发熔断
+BREAK_COOLDOWN = 90.0   # 熔断冷却秒数
+
+
+def breaker_state():
+    """熔断器状态：{'tripped': 是否触发, 'fails': 连续失败数, 'hosts': 涉及主机,
+    'short_circuited': 被快速失败的请求数, 'until': 冷却到期的 epoch}。"""
+    s = dict(_BREAK)
+    s['hosts'] = sorted(_BREAK['hosts'])
+    s['remain_s'] = max(0.0, round(_BREAK['until'] - time.time(), 1))
+    return s
+
+
+def _reset_breaker():
+    _BREAK['fails'] = 0
+    _BREAK['until'] = 0.0
+    _BREAK['tripped'] = False
+
+
 def get(url, tries=3, enc='utf-8', ref='https://quote.eastmoney.com/', timeout=12, gap=0.8):
-    """带重试的 GET。429/断连不是封 IP → 换 token/主机 + 间隔重试。"""
+    """带重试的 GET。
+
+    ⚠️ 两件事要分清（P75）：
+      · **间歇空返回/断连** → 换 token / 换主机 + 间隔重试，通常几次内成功；
+      · **连接级阻断**（实测 `*.push2*.eastmoney.com` 全部 HTTP 000、**0.2 秒内被 RST**，
+        换主机 / 换 ut / 走代理 / 直连全部无效）→ 重试**毫无用处**，
+        只会让 `board_index` 跑到 234 秒，并把"偶发被掐"拖成"持续被掐"。
+    因此在单一 choke point 上加**连接级熔断器**：连续失败到阈值后，
+    本次运行内直接快速失败，不再产生网络请求；状态用 `breaker_state()` 暴露。
+    """
+    host = url.split('/')[2] if '//' in url else url
+    if _BREAK['until'] > time.time():
+        _BREAK['hosts'].add(host)
+        _BREAK['short_circuited'] += 1
+        return None
     last = None
     for _ in range(tries):
         try:
             req = urllib.request.Request(url, headers={'User-Agent': UA, 'Referer': ref})
-            return urllib.request.urlopen(req, timeout=timeout, context=CTX).read().decode(enc, 'ignore')
+            out = urllib.request.urlopen(req, timeout=timeout, context=CTX).read().decode(enc, 'ignore')
+            _reset_breaker()
+            return out
         except Exception as e:
             last = e
             time.sleep(gap)
+    _BREAK['fails'] += 1
+    _BREAK['hosts'].add(host)
+    if _BREAK['fails'] >= BREAK_AFTER:
+        if not _BREAK['tripped']:
+            _BREAK['tripped'] = True
+        _BREAK['until'] = time.time() + BREAK_COOLDOWN
     return None
 
 
@@ -335,10 +381,15 @@ def board_index(refresh=False):
     if _BOARD_IDX and not refresh:
         return _BOARD_IDX
     by_name, by_bk = {}, {}
-    meta = {'pages_ok': 0, 'pages_failed': 0, 'truncated': []}
+    meta = {'pages_ok': 0, 'pages_failed': 0, 'truncated': [], 'blocked': False}
     for fs, kind in (('m:90+t:2', '行业'), ('m:90+t:3', '概念')):
         seen = set()
         for pn in range(1, 9):
+            # 熔断中：不再发请求（否则 8 页 × 4 主机 = 32 次重试，实测白跑 234 秒）
+            if _BREAK['tripped'] and _BREAK['until'] > time.time():
+                meta['blocked'] = True
+                meta['truncated'].append('%s 余下页熔断跳过' % kind)
+                break
             diff, total = None, 0
             # 每页最多换主机重试 4 次 —— **失败页不能 break**：
             # 该索引按 fid=f62 降序取（排序随资金榜实时变化），若某页失败就 break，
