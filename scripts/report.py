@@ -31,6 +31,7 @@ notes.json（可选，全部字段都可缺省；缺省时用规则自动生成�
 import sys
 import os
 import json
+import time
 import argparse
 import datetime
 
@@ -698,16 +699,26 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True, anon=False
 
     # ---- 日线资金流（近 14 日，供报告的资金流向图使用）----
     # 用东财 push2his daykline：注意 ds.fflow(klt=101) 只回当日一条，拿不到历史。
-    try:
-        _fu = ('https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=%s'
-               '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56&klt=101&lmt=0&ut=%s'
-               % (ds.secid(code), ds.UT))
-        _fj = json.loads(ds.get(_fu) or '{}')
-        _fk = (_fj.get('data') or {}).get('klines') or []
-        d['flow_daily'] = [(x.split(',')[0], ds._fl(x.split(',')[1]) / 1e4)
-                           for x in _fk[-14:]]
-    except Exception:
-        d['flow_daily'] = []
+    # ⚠️ 必须重试：该接口会**间歇性空返回**（本项目已多次实测）。若一次失败就判
+    #    "限流不可用"，等于把"偶发抖动"固化成"永久缺失" —— 资金流向图会长期不出，
+    #    而报告还理直气壮地写着"实测三主机均返回 rc:100 或空"（P73）。
+    #    实测对照：同一接口独立重试第 1 次即取到 120 条。
+    _fk = []
+    for _i in range(5):
+        try:
+            _fu = ('https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid=%s'
+                   '&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56&klt=101&lmt=0&ut=%s'
+                   % (ds.secid(code), ds.UT))
+            _fj = json.loads(ds.get(_fu) or '{}')
+            _fk = (_fj.get('data') or {}).get('klines') or []
+        except Exception:
+            _fk = []
+        if _fk:
+            break
+        time.sleep(0.8 * (_i + 1))
+    d['flow_daily'] = [(x.split(',')[0], ds._fl(x.split(',')[1]) / 1e4)
+                       for x in _fk[-14:]]
+    d['flow_daily_tries'] = _i + 1
 
     # ---- 自证校验（常驻，v1.3.0）----
     # 设计意图：本项目最危险的不是崩溃，而是"**看起来完全正常的错误**"——
