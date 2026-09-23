@@ -50,8 +50,11 @@ def main():
     for name, v in m.items():
         chg = v.get('chg')
         zl = v['zl_yi']
-        if chg is None:
-            print(f'  {name}: 板指 -  主力 {zl:+.2f}亿 (红盘{v.get("up","-")}/{v.get("n","-")})')
+        ztxt = ('%+.2f亿' % zl) if zl is not None else '**取数失败**'
+        if chg is None or zl is None:
+            # 任一取数失败：如实标注，不猜测、不按 0 参与判读（P43/P58）
+            print(f'  {name}: 板指 '
+                  f'{("%+.2f%%" % chg) if chg is not None else "-"}  主力 {ztxt}')
             continue
         tag = '🔴兑现型上涨(价强钱撤)' if (chg > 0 and zl < 0) else ('🟢健康接力' if (chg > 0 and zl > 0) else '⚪弱势')
         print(f'  {name}: 板指 {chg:+.2f}%  主力 {zl:+.2f}亿  {tag}')
