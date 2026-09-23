@@ -335,22 +335,35 @@ def board_index(refresh=False):
     if _BOARD_IDX and not refresh:
         return _BOARD_IDX
     by_name, by_bk = {}, {}
+    meta = {'pages_ok': 0, 'pages_failed': 0, 'truncated': []}
     for fs, kind in (('m:90+t:2', '行业'), ('m:90+t:3', '概念')):
         seen = set()
         for pn in range(1, 9):
-            url = (f'https://{EM_HOSTS[0]}/api/qt/clist/get?pn={pn}&pz=100&po=1&np=1'
-                   f'&fltt=2&invt=2&fid=f62&fs={fs}&fields=f12,f14,f3,f62&ut={UT}')
-            r = get(url) or get(url.replace(EM_HOSTS[0], EM_HOSTS[1]))
-            if not r:
-                break
-            try:
-                j = json.loads(r)
-                dd = (j.get('data') or {})
-                diff = dd.get('diff') or []
-            except Exception:
-                break
+            diff, total = None, 0
+            # 每页最多换主机重试 4 次 —— **失败页不能 break**：
+            # 该索引按 fid=f62 降序取（排序随资金榜实时变化），若某页失败就 break，
+            # 索引会被**静默截断**，表现为"同一板块名两次查询一次命中一次 None"，
+            # 且失败页之后的所有板块整体消失。这与 P68 同族：跳过失败页 = 制造有偏样本。
+            for attempt, host in enumerate((EM_HOSTS[0], EM_HOSTS[1], EM_HOSTS[0], EM_HOSTS[1])):
+                url = (f'https://{host}/api/qt/clist/get?pn={pn}&pz=100&po=1&np=1'
+                       f'&fltt=2&invt=2&fid=f62&fs={fs}&fields=f12,f14,f3,f62&ut={UT}')
+                r = get(url)
+                if r:
+                    try:
+                        dd = (json.loads(r).get('data') or {})
+                        diff = dd.get('diff') or []
+                        total = dd.get('total') or 0
+                        break
+                    except Exception:
+                        diff = None
+                time.sleep(0.4 * (attempt + 1))
+            if diff is None or (not diff and pn * 100 - 100 < total):
+                meta['pages_failed'] += 1
+                meta['truncated'].append('%s p%d' % (kind, pn))
+                continue
             if not diff:
                 break
+            meta['pages_ok'] += 1
             for x in diff:
                 bk = str(x.get('f12'))
                 if not bk.startswith('BK') or bk in seen:
@@ -362,11 +375,11 @@ def board_index(refresh=False):
                 rec = (bk, kind, zl, chg)
                 by_bk[bk] = (nm, kind, zl, chg)
                 by_name.setdefault(nm, rec)      # 同名以先出现者为准（行业优先于概念）
-            if pn * 100 >= (dd.get('total') or 0):
+            if pn * 100 >= total:
                 break
             time.sleep(0.2)
     _BOARD_IDX.clear()
-    _BOARD_IDX.update({'by_name': by_name, 'by_bk': by_bk})
+    _BOARD_IDX.update({'by_name': by_name, 'by_bk': by_bk, 'meta': meta})
     return _BOARD_IDX
 
 
