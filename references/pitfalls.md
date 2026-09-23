@@ -1127,6 +1127,35 @@ if chg is None or zl is None:
 正确做法是**用口径推导出"最小完备集合"**（这里是涨幅榜头部），
 在该集合内保持"不跳过失败页"的严谨。**范围可以缩，严谨不能缩。**
 
+---
+
+### P69 用 `grep "main -> main"` 判 push 成功 → 把「被拒绝」也当成成功（09-23 实测）
+
+**现象**：`git push origin main` 实际被拒（`! [rejected] main -> main (fetch first)`），
+但我的脚本打印"✅ 第 1 次成功"。随后核对 SHA 才发现：
+本地 `a3782ec`、远程 `8eb3aec`，**远程有网页端产生的提交，本地已分叉**。
+更早一步，我还据此对用户报了"推送成功"。
+
+**根因**：成功判据写成
+```bash
+echo "$OUT" | grep -qE "main -> main|Everything up-to-date"
+```
+被拒绝的那行恰好也含 `main -> main` —— **同一个子串同时出现在成功与失败两种输出里**。
+
+**修法（判据必须能区分成败，而不是"命中某子串"）**：
+```bash
+LOCAL=$(git rev-parse HEAD); REMOTE=$(git ls-remote origin main | cut -f1)
+[ "$LOCAL" = "$REMOTE" ] && echo OK || echo FAIL
+```
+推送前若远程领先，先 `git fetch origin && git rebase origin/main`（本次 rebase 干净通过，
+README 的版本行与网页端的隐私闸门段落均保留）。
+
+**通用规则**：**凡"从命令输出里 grep 关键词判成败"的写法，都要先问一句：
+失败时的输出里会不会也含这个词？** 更稳的做法是**取权威状态做等值比较**
+（SHA 相等 / 返回码为 0 / 字段值符合预期），而不是**在文本里找有没有某句话**。
+这与 P56（`rg` 不支持 lookbehind → 静默"无匹配"）、P65（`grep -c $'\r'` 假阳性）
+是同一族：**判据本身失效时，结论会朝"看起来正常"的方向错。**
+
 
 
 
