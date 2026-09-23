@@ -20,6 +20,14 @@ _kcache/
 *.json.tmp
 _nextday_*.json
 
+# 扫描中间产物（**按产物类型覆盖，不能只按扩展名** —— P59/P 类教训：
+# _cache_*.json 是接口原始缓存、stage*.json 是分阶段候选池，都是 .json，
+# 与 config.example.json 同扩展名，只按扩展名挡会连配置文件一起挡掉)
+_cache_*.json
+stage*.json
+stage_*.json
+_universe*.json
+
 # 一次性临时脚本（约定以 _ 开头，用完即删；防手滑提交）
 scripts/_*.py
 

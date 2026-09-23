@@ -122,16 +122,25 @@ if __name__ == '__main__':
     mode = sys.argv[1] if len(sys.argv) > 1 else 'strong'
     CASH = cfg.get('cash')
     MAXPX = cfg.get('max_price')
+    PAGES = 10                         # 1000 行；趋势口径请用 --pages 40 覆盖全市场
     for i, a in enumerate(sys.argv):
         if a == '--cash':
             CASH = int(sys.argv[i + 1])
         if a == '--maxpx':
             MAXPX = float(sys.argv[i + 1])
+        if a == '--pages':
+            PAGES = int(sys.argv[i + 1])
         if a == '--all':
             ALL = True                     # 跳过 P39 闸门，显示含已封板的全部候选
-    rows = load_rows()
+    rows = load_rows(pages=PAGES)
     print(f'候选池(涨幅降序抓取，已按 config 的板块权限过滤): {len(rows)} 只'
           f'　资金 {CASH:.0f} 元' + (f'　价格上限 {MAXPX:g} 元' if MAXPX else '　不限价'))
+    # ★ 池子口径提醒（2026-09-23 实测）：load_rows 按 **涨幅降序** 取前 N 页。
+    #   对强势口径无碍（涨幅≥6% 的票必在榜前）；但趋势口径要的是"长期趋势好、
+    #   今天可能横盘"的票 —— 只取前 1000 行会把它们整体排除，属**系统性偏差**。
+    if mode == 'trend' and PAGES * 100 < 3000:
+        print(f'⚠️ 趋势口径池子仅 {PAGES * 100} 行（涨幅降序）→ **偏向今日上涨的票**，'
+              f'横盘型趋势票被整体漏掉；建议加 --pages 40 覆盖全市场。')
     cands = screen(rows, mode)
     cands.sort(key=lambda x: -x['zl'])
     show(cands, f'{mode} 口径')
