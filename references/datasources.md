@@ -186,7 +186,17 @@ def get(url, tries=3, enc='utf-8', ref='https://quote.eastmoney.com/'):
     return None
 ```
 
-- 429 / RemoteDisconnected **不是** IP 被封 → 换 ut / 换主机 / 加 0.8~1.5s 间隔重试，通常 3 次内成功。
+- 429 / RemoteDisconnected **通常**不是 IP 被封 → 换 ut / 换主机 / 加 0.8~1.5s 间隔重试，通常 3 次内成功。
+  > ⚠️ **但这条有例外，而且已经实测到（P75，2026-09-23）**：存在**连接级阻断**这种独立形态 ——
+  > `*.push2*.eastmoney.com`（`push2` / `push2delay` / `82.push2` / `push2his`）**全族**同时不可用，
+  > 表现为 **`HTTP 000`、约 0.2 秒内连接被 RST**（不是 429、不是超时、不是 5xx），
+  > 且 **换主机 / 换 ut / 走系统代理 / 直接绕过代理 全部无效**（出口 IP 相同）。
+  > 此时重试**毫无用处**，还会延长阻断。
+  > **判据**：同族多项同时失败 = 阻断；单点偶发失败 = 抖动。
+  > **此时仍可用的东财通道**：`datacenter-web.eastmoney.com`（财务 PIT）、`quote.eastmoney.com`（网页）。
+  > **替代源**：腾讯快照、新浪/腾讯 K 线（资金面与板块面**暂无替代源**，报告应如实降级为"不予评级"）。
+  > **熔断器**：`ds.get()` 已内置（连续失败 8 次 → 冷却 90 秒快速失败），
+  > 状态用 `ds.breaker_state()` 查；`ds.board_index()['meta']['blocked']` 也会标出阻断。
 - 限流时应放缓到 **每次请求间隔 ≥0.5s**，批量任务加 0.3~0.5s 休眠。
 
 ---
