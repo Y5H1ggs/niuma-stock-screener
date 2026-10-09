@@ -252,7 +252,23 @@ python fees.py                   # 费用敏感度与最小可做资金线
 python pit.py 600000             # 该股的公告日历（PIT 视角：那天能看到什么）
 python patterns.py 600000        # 扩展形态库（22 条）回测
 python patterns.py 600000 --rule "close>ma5 and rsi14<40 and pctb<30"   # 自定义形态
+
+# 10) 因子研究（88 个因子的 IC / ICIR / t 值 / 分时段稳定性）
+python make_pool.py 120 _pool_main.txt    # 生成固定池：**只按静态属性筛，不看价格**（避免前视偏差）
+python factors.py --pool _pool_main.txt --max-px 15 --days 500 --dump _panel.json
+python analyze_panel.py _panel.json       # 冗余矩阵 / 类别汇总 / Bonferroni 校正后的有效清单
+
+# 11) 多指标预测模型（100 特征；**实测未通过有效性检验，仅作记录与追踪**）
+python model.py --pool _pool_main.txt --max-px 15     # 样本外检验（Brier / AUC / 校准 / 分时段）
+python model.py --score 600000 --explain              # 单票打分 + **可逐项相加核对**的归因
+python model.py --score 600000 --log                  # 落预测台账（到期由 calibrate.py 结算，闭环）
+python model.py --pool _pool_main.txt --feats subset.txt   # 受控对照：只跑指定特征子集
 ```
+
+> ⚠️ **两条口径铁律**（v1.2.17 起）：
+> ① **池子只按静态属性固定**（板块 / 是否 ST）；**任何时变条件（价格、市值、流动性）必须用 `--max-px` 逐时点施加** ——
+>    用"期末价格"筛池再回溯历史等于**用未来信息**（实测会把反转类因子 IC 夸大 10~30%）。
+> ② **不固定池子的因子结论没有可比性** —— 同一因子换池子符号可相反。
 
 **关于 `report.py`**：数值、板块相对强度、超买超卖判定、情景概率全部**自动计算**，
 不传 `notes.json` 也能出一份完整报告；传入 `notes.json` 可用人工叙述覆盖
