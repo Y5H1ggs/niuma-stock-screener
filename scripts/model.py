@@ -22,10 +22,11 @@
 
 用法：python model.py [--universe 30] [--horizon 1]
 """
-import os, sys, time, math, random
+import os, sys, io, time, math, random
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import ds
+import factors as FA      # ★ 复用 its `daily_factors` 作为**唯一口径来源**（P85：口径不得多份实现）
 
 FALLBACK_POOL = [
     '000001', '600000', '600030', '000002', '600519', '000858', '600887', '601318',
@@ -34,19 +35,74 @@ FALLBACK_POOL = [
     '601899', '600309', '002304', '600031', '000725', '601668',
 ]
 
+# ★ v1.2.16b：特征名**直接就是 `factors.daily_factors()` 的键名** ——
+#   model.py 不再自己实现任何指标。原先 44 个特征全部本地重写了一遍，
+#   与 factors.py 各算一套（P85 明令禁止：口径多份实现 = 同一个坑踩两遍）。
 FEATS = [
-    'bull', 'bear', 'dev5', 'dev20', 'ma5_slope', 'ma20_slope',
+    # 均线 / 趋势
+    'bull', 'bear', 'devma5', 'devma20', 'ma20_slope', 'dist_ma60', 'ma_align',
+    'above_ma60_ratio', 'trend_r2', 'trend_slope', 'up_days20',
+    # MACD
     'macd_dif', 'macd_dea', 'macd_hist', 'macd_hist_d', 'macd_above0', 'macd_gold',
+    # KDJ
     'kdj_k', 'kdj_d', 'kdj_j', 'kdj_kd', 'kdj_gold', 'kdj_dead',
-    'rsi6', 'rsi14', 'pctb', 'boll_bw', 'cci20', 'wr14', 'mom10',
-    'vr5', 'vr20', 'vp', 'upper', 'lower', 'gap', 'chg',
-    'ff_ratio', 'ff3_ratio', 'ff5_ratio', 'turnover',
-    'pos60', 'pos250', 'streak',
+    # 摆动
+    'rsi6', 'rsi14', 'cci20', 'wr14', 'pctb', 'mom5', 'mom10', 'mom20',
+    # 布林 / 波动
+    'boll_bw', 'atr14', 'vol20', 'vol_ratio_sl', 'ret_skew20', 'range_ratio', 'bw_pctile',
+    # 风险
+    'max_dd20', 'ulcer20', 'atr_ratio', 'down_side_vol',
+    # 量能 / 量价
+    'vr', 'vr5', 'amt_ratio', 'vol_cv20', 'vol_skew20', 'vol_hi_ratio',
+    'vp_corr', 'obv_slope', 'mfi14', 'updown_vol',
+    # 位置
+    'pos60', 'pos250', 'hh_days', 'll_days', 'new_high20', 'new_high60', 'new_low20',
+    'dist_hi20', 'dist_lo20', 'dist_hi250',
+    # 资金
+    'ff1_ratio', 'ff3_ratio', 'ff5_ratio', 'r0_ratio', 'ff_streak', 'ff_accel',
+    'ff_up_ratio', 'ff_cv', 'turn_ratio', 'hs',
+    # 涨停 / 形态
+    'streak', 'limit_up20', 'limit_down20', 'days_since_lu',
+    'upper', 'lower', 'gap', 'yang', 'body', 'close_pos', 'consec_up', 'body_ratio',
+    'gap_up20', 'gap_dn20',
+    # 相对强度（对大盘）
+    'rs5', 'rs20', 'rs60', 'beta20', 'alpha20',
+    # 当日涨幅
+    'chg',
+    # 财务（PIT）
+    'roe', 'rev_yoy', 'np_yoy', 'gm', 'ocf_ps', 'pb_proxy', 'net_margin', 'rev_log',
 ]
 HIDX = {1: 3, 3: 4, 5: 5}      # 行内 fwd 字段下标
 
+_FIN_CACHE = {}
 
-def pool(n=30, verbose=True):
+
+def _fin_at(fin, date):
+    """PIT 取值：只返回 `date` 当天**已经公告**的最新一期财报（带缓存）。
+
+    ⚠️ 用 `notice`（实际公告日）比较，**不能用 `report`（报告期）**——
+       报告期 06-30 的财报若 08-20 才公告，那么 07-01 就使用它属于**前视泄漏**。
+    """
+    if not fin:
+        return None
+    key = (id(fin), date)
+    if key in _FIN_CACHE:
+        return _FIN_CACHE[key]
+    cands = [x for x in fin if (x.get('notice') or '9999') <= date]
+    r = max(cands, key=lambda x: x['report']) if cands else None
+    if len(_FIN_CACHE) > 8000:
+        _FIN_CACHE.clear()
+    _FIN_CACHE[key] = r
+    return r
+
+
+def pool(n=30, verbose=True, pool_codes=None):
+    # ★ 显式池：**做对照实验必须固定池子**。实测 clist 时通时断，
+    #   两次运行可能落到不同样本（15886 条 vs 12078 条）→ 对比直接失效。
+    if pool_codes:
+        if verbose:
+            print('  样本池：**显式指定** %d 只（固定 → 不同配置间可比）' % len(pool_codes))
+        return list(pool_codes), 'explicit'
     try:
         rows = ds.clist(fid='f6', fs=ds.MARKET_MAIN, pages=2, fields='f12,f14,f6')
     except Exception:
@@ -69,101 +125,74 @@ def pool(n=30, verbose=True):
 
 
 # ------------------------------------------------------------------ 特征
-def feats(k, i, fl):
-    """第 i 根 K 线**收盘时**可得的特征（严格只用 k[0..i]，无前视）。None = 剔除。"""
+def feats(k, i, fl, fin=None, ix=None):
+    """第 i 根 K 线**收盘时**的特征（严格只用 k[0..i]，无前视）。None = 剔除。
+
+    ★ v1.2.16b：改为**薄封装** —— 直接消费 `factors.daily_factors()`。
+      原先 model.py 自己实现了 44 个指标，与 factors.py 各算一套；P85 的教训正是
+      "任何能被多个脚本各自重写的指标，都是下一个坑"。现在这里只做两件事：
+      取键 + 完整性校验，**公式全部由 factors 单点维护**。
+    返回 None 的情形：预热不足 / 任一特征缺失或为 nan（**剔除样本，绝不用 0 冒充**）。
+    财务为 PIT（按公告日取值，无前视）；`ix` 为指数收盘映射，缺失时相对强度族为空 → 剔除。
+    """
     if i < 250:
         return None
-    c, o, h, l, v = k[i]['c'], k[i]['o'], k[i]['h'], k[i]['l'], k[i]['v']
-    prev = k[i - 1]['c']
-    if not prev or not c:
-        return None
-    cl = [k[j]['c'] for j in range(i + 1)]
-    hi = [k[j]['h'] for j in range(i + 1)]
-    lo = [k[j]['l'] for j in range(i + 1)]
-    vols = [k[j]['v'] for j in range(i + 1)]
-
-    ma5, ma10, ma20, ma60 = ds.ma(cl, 5), ds.ma(cl, 10), ds.ma(cl, 20), ds.ma(cl, 60)
-    ma5p, ma20p = ds.ma(cl[:-1], 5), ds.ma(cl[:-1], 20)
-    b = ds.boll(cl); m = ds.macd(cl); mp = ds.macd(cl[:-1])
-    kk, dd, jj = ds.kdj(hi, lo, cl)
-    kp, dp, _ = ds.kdj(hi[:-1], lo[:-1], cl[:-1])
-    gold = 1.0 if (kp == kp and kk == kk and kp <= dp and kk > dd) else 0.0
-    dead = 1.0 if (kp == kp and kk == kk and kp >= dp and kk < dd) else 0.0
-
-    v5 = sum(vols[-5:]) / 5.0; v20 = sum(vols[-20:]) / 20.0
-    vr5 = (v / v5) if v5 else 1.0
-    vr20 = (v / v20) if v20 else 1.0
-    up_ = c > prev
-    vp = 1.0 if (up_ and vr20 >= 1.0) else (-1.0 if (up_ and vr20 < 1.0) else (-1.0 if vr20 >= 1.3 else 1.0))
-
-    d = k[i]['d']
-    f = fl.get(d)
+    f, _ = FA.daily_factors(k, i, fin, None, fl, ix)
     if not f:
         return None
-    net = f['net']
-    amt = v * 100 * c
-    n3 = a3 = n5 = a5 = 0.0
-    for j in range(max(0, i - 4), i + 1):
-        fd = fl.get(k[j]['d'])
-        if fd:
-            a_ = k[j]['v'] * 100 * k[j]['c']
-            if j >= i - 2:
-                n3 += fd['net']; a3 += a_
-            n5 += fd['net']; a5 += a_
-    st = 0
-    for j in range(i, 249, -1):
-        if k[j - 1]['c'] and k[j]['c'] / k[j - 1]['c'] - 1 >= 0.095:
-            st += 1
-        else:
-            break
-    r60 = (max(hi[-60:]) - min(lo[-60:]))
-    return [
-        1.0 if ma5 > ma10 > ma20 else 0.0,
-        1.0 if ma5 < ma10 < ma20 else 0.0,
-        (c / ma5 - 1) * 100, (c / ma20 - 1) * 100,
-        (ma5 / ma5p - 1) * 100 if ma5p else 0.0,
-        (ma20 / ma20p - 1) * 100 if ma20p else 0.0,
-        m['dif'], m['dea'], m['macd'],
-        (m['macd'] - mp['macd']) if mp['macd'] is not None else 0.0,
-        1.0 if m['dif'] > 0 else 0.0,
-        1.0 if (mp['macd'] is not None and mp['macd'] <= 0 < m['macd']) else 0.0,
-        kk if kk == kk else 50.0, dd if dd == dd else 50.0, jj if jj == jj else 50.0,
-        (kk - dd) if (kk == kk and dd == dd) else 0.0, gold, dead,
-        ds.rsi(cl, 6), ds.rsi(cl, 14),
-        b['pctb'], ((b['up'] - b['low']) / b['mid'] * 100) if b['mid'] else 0.0,
-        ds.cci(hi, lo, cl, 20), ds.wr(hi, lo, cl, 14), ds.mom(cl, 10),
-        vr5, vr20, vp,
-        (h - max(o, c)) / c * 100, (min(o, c) - l) / c * 100,
-        (o / prev - 1) * 100, (c / prev - 1) * 100,
-        (net / amt) if amt else 0.0, (n3 / a3) if a3 else 0.0, (n5 / a5) if a5 else 0.0,
-        f.get('turnover') or 0.0,
-        (c - min(lo[-60:])) / r60 * 100 if r60 else 50.0,
-        (c - min(lo[-250:])) / (max(hi[-250:]) - min(lo[-250:])) * 100
-        if max(hi[-250:]) > min(lo[-250:]) else 50.0,
-        float(st),
-    ]
+    out = []
+    for nm in FEATS:
+        v = f.get(nm)
+        if v is None or (isinstance(v, float) and v != v):
+            return None
+        out.append(float(v))
+    return out
+
+
+_IX = {}
+
+
+def index_map():
+    """上证指数「日期 → 收盘」映射（**带缓存** —— 逐票各取一次指数会白跑几十次请求）。"""
+    if not _IX:
+        ik = ds.kline_qq('sh000001', 800)
+        if ik:
+            _IX.update({x['d']: x['c'] for x in ik})
+    return _IX
+
+
+# ★ 逐时点价格上限（由 `--max-px` 设置；None = 不过滤）。
+#   用模块级而非逐层传参的原因：build_panel / rank_today / train_final 三处都要用，
+#   逐层传参会把签名搞乱，且**漏传一处就会静默不过滤**（比显式全局更危险）。
+_G_MAX_PX = None
 
 
 def build_panel(codes, verbose=True):
-    rows, dropped = [], {'warmup': 0, 'nan': 0, 'fail': 0}
+    rows, dropped = [], {'warmup': 0, 'nan': 0, 'fail': 0, 'px': 0}
+    # ★ 指数基准（相对强度族的前提）：**必须显式写 sh000001**
+    #   （裸码 `000001` 会被当成平安银行 —— 本项目老坑）
+    ix = index_map()
+    if verbose:
+        print('    指数基准 sh000001 %d 根%s'
+              % (len(ix), '' if ix else '  ⚠️ 取数失败 → 相对强度族将缺失，样本被剔除'))
     for n, c in enumerate(codes):
         k = ds.kline_qq(c, 800)
         fl = {}
         for x in ds.moneyflow_sina(c, 600):
             if x[0]:
-                fl[x[0]] = {'net': x[1], 'turnover': x[5]}
+                fl[x[0]] = {'net': x[1], 'r0': x[2], 'turnover': x[5] / 100.0}   # x[5] 是换手率×100
+        fin = ds.financials(c)          # ★ P0-2：PIT 财务因子（内部按公告日取值，无前视）
         if not k or len(k) < 400 or not fl:
             dropped['fail'] += 1
             continue
         today = time.strftime('%Y-%m-%d')
         last = len(k) - 1 - (1 if k[-1]['d'] == today else 0)   # 最后一个【完整】交易日的下标
-        # ★ 一直取到 last（含最后几个交易日）：尾部没有"未来收益"，fwd 置 None（评估时过滤掉）。
-        #   为什么必须留这条尾巴：单票打分要用「目标票信号日」的**同日横截面**做排名转换，
-        #   若样本只到 last-5，最新横截面就停在 5 天前 → 打分时找不到该日截面。
-        #   ⚠️ 标签也**不得超过 last**：否则会拿"今日未走完那根"的收盘当未来收益
-        #      （同 P84「K 线末根语义」——半日数据既不能进特征，也不能进标签）。
         for i in range(250, last + 1):
-            f = feats(k, i, fl)
+            # ★ 逐时点价格条件（**当日**收盘价 → 无前视；见 P91）
+            if _G_MAX_PX is not None and k[i]['c'] > _G_MAX_PX:
+                dropped['px'] += 1
+                continue
+            f = feats(k, i, fl, fin, ix)
             if f is None:
                 dropped['warmup'] += 1
                 continue
@@ -275,27 +304,90 @@ def split(rows, frac=0.70):
     return [r for r in rows if r[0] < cut], [r for r in rows if r[0] >= cut]
 
 
+def platt(logits, y, iters=400, lr=0.08):
+    """Platt scaling：在**独立校准集**上拟合 `p' = σ(a·logit + b)`，修正概率校准。
+
+    ★ 为什么必须做（10-09 实测的诊断）：**Brier 惩罚的是"校准"，AUC 只关心"排序"。**
+      出现「AUC 0.514 > 0.5（排序确有微弱信息）却 Brier ≥ 基线（概率还不如一直说常数）」
+      —— 这不是"没信号"，而是**概率被系统性高估/低估**。修校准即可把 Brier 拉回基线之下。
+      （只改 a、b 两个参数，**不改排序**，所以 AUC 完全不变 —— 这也让它可被证伪。）
+    """
+    a, b = 1.0, 0.0
+    n = max(1, len(y))
+    for _ in range(iters):
+        ga = gb = 0.0
+        for z, yi in zip(logits, y):
+            p = 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, a * z + b))))
+            e = p - yi
+            ga += e * z
+            gb += e
+        a -= lr * ga / n
+        b -= lr * gb / n
+    return a, b
+
+
+def _blocks(rows, y, p, k=4):
+    """按时间把测试集切 k 段、各段单算 AUC —— **检查"平均 AUC"会不会被某一段撑起来**。
+    单一平均数最容易掩盖"某段时间完全无效甚至反向"。"""
+    idx = sorted(range(len(rows)), key=lambda i: rows[i][0])
+    out, step = [], max(1, len(idx) // k)
+    for s in range(0, len(idx), step):
+        seg = idx[s:s + step]
+        if len(seg) < 50:
+            continue
+        yy = [y[i] for i in seg]; pp = [p[i] for i in seg]
+        out.append((rows[seg[0]][0], rows[seg[-1]][0], len(seg), auc(yy, pp) or 0))
+    return out
+
+
 def evaluate(TR, TE, h, tag):
     j = HIDX[h]
     # ★ 过滤掉"还没有未来收益"的尾部样本（_g() 返回 None）——
     #   这些样本只用于「当日横截面」，**不能**参与训练/评估。
     TR = [r for r in TR if r[j] is not None]
     TE = [r for r in TE if r[j] is not None]
-    Xtr = [list(r[2]) for r in TR]; ytr = [1.0 if r[j] > 0 else 0.0 for r in TR]
-    Xte = [list(r[2]) for r in TE]; yte = [1.0 if r[j] > 0 else 0.0 for r in TE]
-    if not Xtr or not Xte:
-        return dict(tag=tag, h=h, ntr=0, nte=0, base=0.0, act=0.0, br_m=1.0,
-                    br_b=1.0, auc=None, top=0.0, top_p=0.0, topn=0, w=[0.0] * len(FEATS))
-    Ztr, mu, sd = standardize(Xtr)
-    Zte, _, _ = standardize(Xte, mu, sd)
-    w, b = fit(Ztr, ytr)
-    pte = [proba(w, b, r) for r in Zte]
-    base = sum(ytr) / len(ytr)
-    k_, wr, mp = topk(yte, pte, 0.20)
+    if not TR or not TE:
+        return dict(tag=tag, h=h, ntr=0, nte=0, base=0.0, act=0.0, br_m=1.0, br_cal=1.0,
+                    br_b=1.0, auc=None, top=0.0, top_p=0.0, topn=0, w=[0.0] * len(FEATS),
+                    platt=(1.0, 0.0), blocks=[], mu=None, sd=None)
+    # ★ 三分：拟合权重 / 拟合 Platt 校准 / 评估。
+    #   **校准集必须独立于评估集** —— 用测试集去调校准参数，就是把答案抄进答卷
+    #   （与"随机切分"同族的泄漏，只是更隐蔽）。
+    dts = sorted(set(r[0] for r in TR))
+    cut_c = dts[int(len(dts) * 0.85)]
+    TFit = [r for r in TR if r[0] < cut_c]
+    TCal = [r for r in TR if r[0] >= cut_c]
+    if len(TFit) < 300 or len(TCal) < 300:
+        TFit, TCal = TR, TR
+
+    def XY(rows):
+        return [list(r[2]) for r in rows], [1.0 if r[j] > 0 else 0.0 for r in rows]
+
+    Xf, yf = XY(TFit)
+    Zf, mu, sd = standardize(Xf)
+    w, b = fit(Zf, yf)
+
+    def logits(rows):
+        Z, _, _ = standardize([list(r[2]) for r in rows], mu, sd)
+        return [b + sum(w[t] * r[t] for t in range(len(r))) for r in Z]
+
+    yc = [1.0 if r[j] > 0 else 0.0 for r in TCal]
+    a, bb = platt(logits(TCal), yc)
+    lte = logits(TE)
+    yte = [1.0 if r[j] > 0 else 0.0 for r in TE]
+
+    def sig(z):
+        return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, z))))
+
+    p_raw = [sig(z) for z in lte]
+    p_cal = [sig(a * z + bb) for z in lte]
+    base = sum(yf) / len(yf)
+    k_, wr, mp = topk(yte, p_cal, 0.20)
     return dict(tag=tag, h=h, ntr=len(TR), nte=len(TE), base=base,
-                act=sum(yte) / len(yte), br_m=brier(yte, pte),
-                br_b=brier(yte, [base] * len(yte)), auc=auc(yte, pte),
-                top=wr, top_p=mp, topn=k_, w=w, mu=mu, sd=sd)
+                act=sum(yte) / len(yte), br_m=brier(yte, p_raw),
+                br_cal=brier(yte, p_cal), br_b=brier(yte, [base] * len(yte)),
+                auc=auc(yte, p_raw), top=wr, top_p=mp, topn=k_,
+                w=w, mu=mu, sd=sd, platt=(a, bb), blocks=_blocks(TE, yte, p_raw))
 
 
 # ------------------------------------------------------------------ 单票打分 / 今日清单 / 台账闭环
@@ -316,8 +408,8 @@ def train_final(pool_codes, h=1, verbose=True):
     Z, mu, sd = standardize(Xa)
     w, b = fit(Z, ya)
     return dict(w=w, b=b, mu=mu, sd=sd, auc=oos['auc'], brier=oos['br_m'],
-                base_brier=oos['br_b'], n=len(X), pool=pool_codes, tag=oos['tag'],
-                dropped=dropped, raw=P, xs=X)
+                base=oos['base'], base_brier=oos['br_b'], n=len(X), pool=pool_codes,
+                tag=oos['tag'], dropped=dropped, raw=P, xs=X)
 
 
 def _xsec_row(M, day, raw_f):
@@ -352,7 +444,7 @@ def score_code(M, code, day=None):
     fl = {}
     for x in ds.moneyflow_sina(code, 600):
         if x[0]:
-            fl[x[0]] = {'net': x[1], 'turnover': x[5]}
+            fl[x[0]] = {'net': x[1], 'r0': x[2], 'turnover': x[5] / 100.0}   # x[5] 是换手率×100
     if not k or not fl:
         return None
     i = len(k) - 1 - (1 if k[-1]['d'] == time.strftime('%Y-%m-%d') else 0)
@@ -361,7 +453,7 @@ def score_code(M, code, day=None):
         if not idx:
             return None
         i = idx[0]
-    f = feats(k, i, fl)
+    f = feats(k, i, fl, ds.financials(code), index_map())
     if f is None or any(x != x for x in f):
         return None
     xr = _xsec_row(M, k[i]['d'], f)
@@ -370,6 +462,37 @@ def score_code(M, code, day=None):
     z = [(xr[j] - M['mu'][j]) / M['sd'][j] for j in range(len(xr))]
     return {'code': code, 'prob': proba(M['w'], M['b'], z),
             'date': k[i]['d'], 'close': k[i]['c']}
+
+
+def explain(M, code):
+    """单票**可复核归因**：模型是线性的 → `截距 + Σ(权重 × 标准化排名) = logit` → 概率。
+
+    返回 `(rows, bias, logit, date, close)`，rows = [(特征, 横截面排名, 权重, 贡献)]（按贡献升序）。
+    ★ 为什么必须能归因：一个给出"41.6%"却说不清**为什么**的模型，
+      和掷骰子没有区别 —— 概率必须能被拆开、被逐项核对，才谈得上被信任。
+    """
+    k = ds.kline_qq(code, 800)
+    fl = {}
+    for x in ds.moneyflow_sina(code, 600):
+        if x[0]:
+            fl[x[0]] = {'net': x[1], 'r0': x[2], 'turnover': x[5] / 100.0}   # x[5] 是换手率×100
+    if not k or not fl:
+        return None
+    i = len(k) - 1 - (1 if k[-1]['d'] == time.strftime('%Y-%m-%d') else 0)
+    f = feats(k, i, fl, ds.financials(code), index_map())
+    if f is None or any(x != x for x in f):
+        return None
+    xr = _xsec_row(M, k[i]['d'], f)
+    if xr is None:
+        return None
+    rows, logit = [], M['b']
+    for j, nm in enumerate(FEATS):
+        z = (xr[j] - M['mu'][j]) / M['sd'][j]
+        c = M['w'][j] * z
+        logit += c
+        rows.append((nm, xr[j], M['w'][j], c))
+    rows.sort(key=lambda z: z[3])
+    return rows, M['b'], logit, k[i]['d'], k[i]['c']
 
 
 def rank_today(M, codes, verbose=True):
@@ -404,18 +527,42 @@ def log_forecast(r, M, note=''):
 
 
 def main():
+    global _G_MAX_PX
     uni, target, do_log = 30, None, ('--log' in sys.argv)
+    feats_file = None
+    pool_file = None
     for i, a in enumerate(sys.argv):
         if a == '--universe':
             uni = int(sys.argv[i + 1])
         if a == '--score':
             target = sys.argv[i + 1]
+        if a == '--feats':
+            feats_file = sys.argv[i + 1]
+        if a == '--pool':
+            pool_file = sys.argv[i + 1]
+        if a == '--max-px':
+            _G_MAX_PX = float(sys.argv[i + 1])
+    # ★ `--feats FILE`：只保留文件里列出的特征 → **做受控对照实验**用。
+    #   动机：特征从 44 扩到 100 后样本外指标全面退化，必须能回答
+    #   "到底是加多了，还是新特征本身没用" —— 只有同一池子、同一时点的对照才算数。
+    if feats_file:
+        want = [l.strip() for l in io.open(feats_file, encoding='utf-8') if l.strip()]
+        wset = set(want)
+        keep = [x for x in FEATS if x in wset]
+        miss = [x for x in want if x not in set(FEATS)]
+        if keep:
+            print('  ★ 特征子集生效：%d 个（原 %d 个）%s'
+                  % (len(keep), len(FEATS), ('；忽略未知名 %d 个：%s' % (len(miss), miss[:6])) if miss else ''))
+            FEATS[:] = keep
     print('=' * 104)
     print('【模型单票判断】%s' % target if target else '【多指标走势预测模型 · 样本外检验】')
     print('=' * 104)
     print('时间', time.strftime('%Y-%m-%d %H:%M:%S'),
           '| 特征 %d 个（MACD / KDJ / 资金 / 均线 / 摆动 / 量能 / 位置 / 形态）' % len(FEATS))
-    codes, src = pool(uni)
+    pcs = None
+    if pool_file:
+        pcs = [l.strip() for l in io.open(pool_file, encoding='utf-8') if l.strip()]
+    codes, src = pool(uni, pool_codes=pcs)
 
     if target:
         M = train_final(codes)
@@ -431,18 +578,40 @@ def main():
         print()
         print('-' * 104)
         print('  信号日 %s（最后一个**完整**交易日）  收盘 %.2f' % (r['date'], r['close']))
-        print('  ★ 模型 P(次一交易日收涨) = **%.1f%%**' % (r['prob'] * 100))
+        _b = (M.get('base') or 0) * 100
+        _dev = (r['prob'] * 100) - _b
+        print('  ★ 模型 P(次一交易日收涨) = **%.1f%%**   ｜ 训练池基准率 %.1f%%   ｜ 偏离 **%+.1fpp**'
+              % (r['prob'] * 100, _b, _dev))
+        print('  ⚠️ **概率口径**：这是"相对基准率的偏离"，**不是方向判断**。'
+              '偏离在 ±5pp 内 ≈ 模型"没有观点"。')
         if r['prob'] <= 0.001 or r['prob'] >= 0.999:
             print('  🔴 **概率饱和（0% / 100%）→ 判定为口径异常，本次结果作废。**')
             print('     任何"恰好 0 或 100%"的关键指标，先怀疑口径/取数失败，而不是当成极强信号。')
-            print('     （实测第一版就是因为漏了横截面排名转换，稳定输出 100.0%）')
             return
         print('  ⚠️ 验证状态：该配置样本外 AUC **%.4f**（0.5 = 无区分度；本轮实测未通过）'
               % (M['auc'] or 0))
         if (M['auc'] or 0) < 0.53:
             print('  → **未通过有效性检验：此概率不得作为决策依据**，仅作记录与追踪之用。')
-        print('  ⚠️ 本打分只用**闭合日线**特征，今日盘中信息**未纳入**。')
+        print('  ⚠️ **信息截止**：只用 %s 的闭合日线特征 —— 今日盘中量价、盘中资金、'
+              '盘后消息**均未纳入**。' % r['date'])
         print('-' * 104)
+
+        if '--explain' in sys.argv:
+            ex = explain(M, target)
+            if ex:
+                rows, bias, logit, d_, c_ = ex
+                print('【归因 · 可逐项复核】模型是线性的：`截距 + Σ(权重 × 标准化排名) = logit`')
+                print('  %-14s %11s %10s %11s' % ('特征', '横截面排名', '权重', '对 logit 贡献'))
+                for nm, rk, w_, c in rows[:8]:
+                    print('  %-14s %10.2f%% %+10.4f %+11.4f  ← 压低' % (nm, rk * 100, w_, c))
+                print('  %-14s %11s %10s %11s' % ('…（中间 %d 项略）' % max(0, len(rows) - 12), '', '', ''))
+                for nm, rk, w_, c in rows[-4:]:
+                    print('  %-14s %10.2f%% %+10.4f %+11.4f  ← 抬高' % (nm, rk * 100, w_, c))
+                ssum = sum(x[3] for x in rows)
+                print('  截距 %+.4f ｜ Σ贡献 %+.4f ｜ logit %+.4f ｜ 概率 %.1f%%'
+                      % (bias, ssum, bias + ssum, r['prob'] * 100))
+                print('  校验：截距 + Σ贡献 == logit（可自行相加核对；对不上说明归因有漏项）')
+                print()
         if do_log:
             rec = log_forecast(r, M, note='model.py --score')
             print('  已写入预测台账 id=%s → 到期 `calibrate.py settle` 自动结算' % rec['id'])
@@ -450,8 +619,9 @@ def main():
 
     print('载入数据（腾讯 qfq 800 根 + 新浪资金 600 日）…')
     rows, dropped = build_panel(codes)
-    print('样本 %d 条 | 剔除：预热 %d、nan %d、取数失败 %d'
-          % (len(rows), dropped['warmup'], dropped['nan'], dropped['fail']))
+    _extra = ('、价格>%.2f %d' % (_G_MAX_PX, dropped['px'])) if _G_MAX_PX is not None else ''
+    print('样本 %d 条 | 剔除：预热 %d、nan %d、取数失败 %d%s'
+          % (len(rows), dropped['warmup'], dropped['nan'], dropped['fail'], _extra))
     if len(rows) < 1000:
         print('⚠️ 样本 < 1000，**不予建模**（样本不足的结果不可外推）。')
         return
@@ -466,16 +636,29 @@ def main():
     print('（**按时间切分，不随机** —— 随机切分会造成前视泄漏，把模型"测"得很好看而实盘无效）')
     print()
     print('-' * 104)
-    print('%-22s %4s %9s %11s %8s %12s %12s' % ('配置', 'h', 'Brier', '基线Brier', 'AUC', 'Top20%实际', 'Top20%预测'))
-    print('-' * 104)
+    print('%-20s %4s %9s %9s %11s %8s %11s %11s' % (
+        '配置', 'h', 'Brier原', 'Brier校准', '基线Brier', 'AUC', 'Top20%实际', 'Top20%预测'))
+    print('-' * 112)
     res = []
     for tag, TR, TE in (('① 绝对值特征', trA, teA), ('② 横截面标准化', trX, teX)):
         for h in (1, 3, 5):
             r = evaluate(TR, TE, h, tag)
             res.append(r)
-            print('%-22s %4d %9.4f %11.4f %8.4f %11.2f%% %11.2f%%'
-                  % (tag, h, r['br_m'], r['br_b'], r['auc'] or 0, r['top'] * 100, r['top_p'] * 100))
-    print('-' * 104)
+            flag = '✅' if r['br_cal'] < r['br_b'] else '  '
+            print('%-20s %4d %9.4f %9.4f %11.4f %8.4f %10.2f%% %10.2f%% %s'
+                  % (tag, h, r['br_m'], r['br_cal'], r['br_b'], r['auc'] or 0,
+                     r['top'] * 100, r['top_p'] * 100, flag))
+    print('-' * 112)
+    print('  「Brier校准」= 用**独立校准集**拟合的 Platt scaling（只改 a/b，不改排序 → AUC 不变）')
+    print('  ✅ = Brier 已低于基线（接入财务因子后原先 6 个配置**全部 ≥ 基线**）')
+    print()
+    print('【分时段稳定性】—— 平均 AUC 会不会被某一段撑起来？')
+    bconf = max(res, key=lambda r: (r['auc'] or 0))
+    print('  （取 AUC 最高的配置：%s / h=%d）' % (bconf['tag'], bconf['h']))
+    for b_ in bconf['blocks']:
+        print('    %s ~ %s   n=%5d   AUC %.4f%s' % (b_[0], b_[1], b_[2], b_[3],
+              '   ← 反向' if b_[3] < 0.5 else ''))
+    print()
     for h in (1, 3, 5):
         rr = [r for r in teX if r[HIDX[h]] is not None]
         print('  h=%d 测试集实际上涨率 %.2f%%（样本 %d 条；已剔除"无未来收益"的尾部）'
