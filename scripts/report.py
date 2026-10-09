@@ -467,6 +467,15 @@ def ladder_scan(topn=80, pre=False):
        否则会伪造成"2 板及以上 0 只 → 情绪偏冷"，把取数失败当利空。"""
     today = datetime.date.today().strftime('%Y-%m-%d')
     rows = ds.clist(fid='f3', fs=MARKET_MAIN, pages=6, fields='f12,f14,f2,f3')
+    if not rows:
+        # ★ P76 降级：clist 全灭 → 用 datacenter 按涨幅过滤直接取涨停名单。
+        #   ⚠️ 该报表**只存最新交易日**（日期 filter 实测一律返回 0 条），
+        #      因此只用于拿"今日涨停股"；"昨日是否涨停"仍由下方 K 线逐票判定，
+        #      那一步走腾讯 K 线，不受 push2 封禁影响 —— 所以 streak 口径不降级。
+        _dc = ds.dce_get('RPT_DMSK_TS_STOCKNEW', flt='(CHANGE_RATE>9.7)', pz=300)
+        rows = [{'f12': str(x.get('SECURITY_CODE')), 'f14': x.get('SECURITY_NAME_ABBR'),
+                 'f2': x.get('CLOSE_PRICE'), 'f3': x.get('CHANGE_RATE')}
+                for x in _dc if x.get('SECURITY_CODE')]
     valid = [] if pre else [x for x in rows if _ok(x.get('f3'))]
     if not valid:
         return [], 0, False
@@ -560,7 +569,22 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True, anon=False
     prof = ds.stock_profile(code)
     d['profile'] = prof
     bidx = ds.board_index().get('by_name') or {}
-    ibk = (bidx.get(prof['industry'])[0] if prof.get('industry') in bidx else None)
+    # 行业基准：取**能在板块索引里命中**的那一级。
+    # 降级源下由粗到细的行业链（电力设备→电池→电池化学品）只有部分进得了索引，
+    # 只试最粗一级会直接丢失行业基准 → P35 双基准退化成单基准（自证校验报警）。
+    ibk, _ind_name = None, None
+    for _nm in (prof.get('industries') or ([prof['industry']] if prof.get('industry') else [])):
+        _r = bidx.get(_nm)
+        if _r and _r[1] == '行业':
+            ibk, _ind_name = _r[0], _nm
+            break
+    if ibk is None:                      # 兜底：实在没有"行业"标记的，任何命中即可
+        for _nm in (prof.get('industries') or []):
+            _r = bidx.get(_nm)
+            if _r:
+                ibk, _ind_name = _r[0], _nm
+                break
+    d['ind_name'] = _ind_name
     tbk, tzl = None, None
     for cn in (prof.get('concepts') or []):
         rec = bidx.get(cn)
@@ -637,7 +661,7 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True, anon=False
         'zl2': _fl(ul.get('f78')) if _ok(ul.get('f78')) else None,
         'xl2': _fl(ul.get('f84')) if _ok(ul.get('f84')) else None,
     }
-    d['flow_days'] = fflow(code, klt=101, lmt=12)
+    d['flow_days'], d['flow_days_src'] = ds.flow_days_any(code, 12)
 
     pts = minute(code)
     d['minutes'] = pts
@@ -716,8 +740,14 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True, anon=False
         if _fk:
             break
         time.sleep(0.8 * (_i + 1))
-    d['flow_daily'] = [(x.split(',')[0], ds._fl(x.split(',')[1]) / 1e4)
-                       for x in _fk[-14:]]
+    if _fk:
+        d['flow_daily'] = [(x.split(',')[0], ds._fl(x.split(',')[1]) / 1e4) for x in _fk[-14:]]
+        d['flow_daily_src'] = 'em'
+    else:
+        # ★ P76 降级：push2his 接口级 RST 时改走新浪资金流（口径不同，渲染层必须标注）
+        _sn = ds.moneyflow_sina(code, 14)
+        d['flow_daily'] = [(str(_d), _z / 1e4) for _d, _z, _r, _c, _p, _t in _sn]
+        d['flow_daily_src'] = 'sina' if _sn else None
     d['flow_daily_tries'] = _i + 1
 
     # ---- 自证校验（常驻，v1.3.0）----
@@ -1347,14 +1377,25 @@ def build(d, notes):
             tag = ' class=peertr' if x.get('peer') else ''
             b = x.get('basis')
             pt = (f' <span class=peertag>{b}基准</span>' if b else '')
-            return (f"<tr{tag}><td><b>{esc(x['name'])}</b>"
-                    f" <span class='tiny'>{x['bk']}</span>{pt}</td>"
-                    f"<td>{x['n']}</td><td>{x['up']}</td>"
-                    f"<td class='num {cls(x['zl'])}'>{_fmt(x['zl'], ' 亿')}</td>"
-                    f"<td class='num'>{_fmt(x['med'], '%')}</td>"
-                    f"<td class='num {cls(s['chg'])}'>{s['chg']:+.2f}%</td>"
-                    f"<td class='num {cls(x.get('rel') or 0)}'>{_fmt(x.get('rel'), 'pp')}</td>"
-                    f"<td>{x.get('rank') or '—'}/{x['n']}</td></tr>")
+            # 板块主力：优先「Σ成分」口径（与"涨幅中位数"同源，可交叉验证）；
+            # 该口径不可用时（降级源无个股资金）退回「板块级」口径并标 ⓑ。
+            # 铁律 13：两者可同号也可反号，**只并列展示、不混算**（实测同日锂电池概念
+            # 板块级 −38.62 亿 / Σ成分 +25.93 亿）。
+            if x['zl'] is not None:
+                zlc = "<td class='num %s'>%s</td>" % (cls(x['zl']), _fmt(x['zl'], ' 亿'))
+            elif x.get('board_zl') is not None:
+                zlc = ("<td class='num %s'>%s<span class='tiny'>ⓑ</span></td>"
+                       % (cls(x['board_zl']), _fmt(x['board_zl'], ' 亿')))
+            else:
+                zlc = "<td class='num'>—</td>"
+            return ("<tr%s><td><b>%s</b> <span class='tiny'>%s</span>%s</td>"
+                    "<td>%d</td><td>%d</td>%s<td class='num'>%s</td>"
+                    "<td class='num %s'>%+.2f%%</td><td class='num %s'>%s</td>"
+                    "<td>%s/%d</td></tr>"
+                    % (tag, esc(x['name']), x['bk'], pt, x['n'], x['up'], zlc,
+                       _fmt(x['med'], '%'), cls(s['chg']), s['chg'],
+                       cls(x.get('rel') or 0), _fmt(x.get('rel'), 'pp'),
+                       x.get('rank') or '—', x['n']))
 
         rows = ''.join(_row(x) for x in d['sectors'])
         best, peer = pick_sectors(d)
@@ -1405,7 +1446,10 @@ def build(d, notes):
                    f'<th>涨幅中位数（全量）</th><th>个股涨幅</th><th>相对强度</th><th>个股排名</th></tr>'
                    f'{rows}</table>'
                    f'<p class="tiny">⚠️ 中位数按<b>板块全量成分</b>计算。若只取涨幅前 100 名，'
-                   f'其"中位数"≈全市场 90 分位，会系统性把中游票误判为弱势票。</p>',
+                   f'其"中位数"≈全市场 90 分位，会系统性把中游票误判为弱势票。</p>'
+                   f'<p class="tiny">⚠️ <b>板块主力</b>默认用「Σ成分主力净额」口径（与涨幅中位数同源）。'
+                   f'带 <b>ⓑ</b> 者为<b>板块级</b>口径（东财板块指数自身的主力净额）—— '
+                   f'两种口径<b>可同号也可反号，只并列展示、不做加减或比较</b>。</p>',
                    cnt=f'共 {len(d["sectors"])} 个相关板块')
                 + concl + sub)
         # ★ G9：主营构成校验 —— 板块对比之前先确认"它靠什么赚钱"
@@ -1463,35 +1507,48 @@ def build(d, notes):
             + SC('⚠️ 反对的一方', '<ul>' + ''.join(f'<li>{x}</li>' for x in nb) + '</ul>',
                  tone='warn', cnt=f'{len(nb)} 条'))
     if d.get('flow_days'):
+        _fsrc = d.get('flow_days_src')
         t = ('<table><tr><th>日期</th><th>主力</th><th>超大单</th><th>大单</th><th>中单</th>'
              '<th>小单</th></tr>')
+
+        def _cell(v):
+            # ⚠️ 降级源（新浪）没有超大/大/中/小单拆分，值为 None ——
+            #    原实现直接 `v/1e4` 会抛 TypeError 让整篇报告崩掉。
+            return (f"<td class='num {cls(v)}'>{v / 1e4:+.0f}</td>"
+                    if isinstance(v, (int, float)) else "<td class='num'>—</td>")
+
         for tm, zl, xs, zs, dsz, xos in d['flow_days']:
-            t += (f"<tr><td>{tm[-5:]}</td><td class='num {cls(zl)}'>{zl / 1e4:+.0f}</td>"
-                  f"<td class='num {cls(xs)}'>{xs / 1e4:+.0f}</td>"
-                  f"<td class='num {cls(zs)}'>{zs / 1e4:+.0f}</td>"
-                  f"<td class='num {cls(dsz)}'>{dsz / 1e4:+.0f}</td>"
-                  f"<td class='num {cls(xos)}'>{xos / 1e4:+.0f}</td></tr>")
+            t += (f"<tr><td>{tm[-5:]}</td>" + _cell(zl) + _cell(xs) + _cell(zs)
+                  + _cell(dsz) + _cell(xos) + "</tr>")
         t += '</table>'
         signs = ' '.join(('+' if _fl(x[1]) > 0 else '−') for x in d['flow_days'])
         neg = sum(1 for x in d['flow_days'] if _fl(x[1]) < 0)
         t += (f'<p class="tiny">近 {len(d["flow_days"])} 日主力符号 <b>{signs}</b>，'
               f'负值 {neg}/{len(d["flow_days"])} 天。单位：万元。</p>')
+        if _fsrc == 'sina':
+            t += ('<p class="tiny">⚠️ 数据来源为 <b>新浪资金流</b>（东财 '
+                  '<code>fflow/daykline</code> 本次不可用）。新浪的主净额与特大单口径'
+                  '与东财<b>不可直接比较</b>，且无超大/大/中/小单拆分，故后四列显示「—」。</p>')
+        elif _fsrc == 'em':
+            t += '<p class="tiny">数据来源：东财 <code>fflow/daykline</code>。</p>'
         body += SC('资金结构（日线级，近 12 日）', t)
     else:
         body += SC('资金结构（日线级，近 12 日）',
-                   '<p class="tiny">日线级资金流接口（<code>fflow/daykline</code>）当前'
-                   '<b>限流不可用</b>（实测三主机均返回 <code>rc:100</code> 或空）。'
-                   '本节的"近 N 日资金连续性"因此缺失，评级中该项按 0 分计（不计负分）。'
-                   '盘中实时主力净额（<code>ulist</code>）不受影响，仍见上文。</p>')
+                   '<p class="tiny">日线级资金流<b>两源均不可用</b>'
+                   '（东财 <code>fflow/daykline</code> 与新浪 <code>MoneyFlow</code> 都取数失败）。'
+                   '本节缺失，评级中该项按 0 分计（不计负分）。</p>')
     # ===== 资金流向（图）=====
     _fd = d.get('flow_daily') or []
+    _fsrc2 = d.get('flow_daily_src')
     if _fd:
         _ftot = sum(v for _dd, v in _fd)
+        _badge = ('东财日线口径' if _fsrc2 == 'em'
+                  else ('新浪口径（与东财不可直接比较）' if _fsrc2 == 'sina' else '口径未知'))
         A(C('资金流向',
             SC('近 14 个交易日主力净额',
                charts.flow_bars_svg(_fd),
                cnt='红 = 净流入　绿 = 净流出　合计 %+.0f 万' % _ftot),
-            badge='东财日线口径', tone='warn' if _ftot < 0 else 'ok'))
+            badge=_badge, tone='warn' if _ftot < 0 else 'ok'))
 
     A(C('三、多空研判', body, tone='warn' if len(nb) > len(pb) else 'ok'))
 
@@ -1515,9 +1572,9 @@ def build(d, notes):
 </table>'''
         t3 = f'''<table>
 <tr><th>指标</th><th>读数</th><th>判读</th></tr>
-<tr><td>量能</td><td>{d.get('vr20', 0):.2f} 倍 20 日均量</td><td>{'放量' if d.get('vr20', 0) > 1.5 else '平量'}</td></tr>
-<tr><td>60 日位置</td><td><b>{ind['pos60']:.0f}%</b></td><td>{'短期偏高' if ind['pos60'] > 70 else '中低位'}</td></tr>
-<tr><td>250 日位置</td><td>{ind['pos250']:.0f}%</td><td>{'长期偏高' if ind['pos250'] > 70 else '长期仍低'}</td></tr>
+<tr><td>量能</td><td>{d.get('vr20', 0):.2f} 倍 20 日均量<span class="tiny">（当日累计 ÷ 20 日<b>全天</b>均量；盘中口径不可比，量能请以抬头卡的<b>量比</b>为准）</span></td><td>{'放量' if d.get('vr20', 0) > 1.5 else '平量'}</td></tr>
+<tr><td>60 日位置</td><td><b>{'%.0f%%' % ind['pos60'] if ind.get('pos60') is not None else '不可用'}</b></td><td>{('短期偏高' if ind['pos60'] > 70 else '中低位') if ind.get('pos60') is not None else 'K 线不足 60 根'}</td></tr>
+<tr><td>250 日位置</td><td>{'%.0f%%' % ind['pos250'] if ind.get('pos250') is not None else '不可用'}</td><td>{('长期偏高' if ind['pos250'] > 70 else '长期仍低') if ind.get('pos250') is not None else 'K 线不足 250 根'}</td></tr>
 </table>'''
         # K 线图（v1.2.5）：报告里最直观的一张图，放技术分析卡首位。
         # ⚠️ 数据键是 d['k']（gather 里已剔除当日未完成根），不是 d['kl']。
@@ -1619,25 +1676,42 @@ def build(d, notes):
     body = ''
     if d.get('mood'):
         mv = [v for v in d['mood'].values() if v.get('zl_yi') is not None]
-        t = ('<table><tr><th>情绪指标</th><th>板指涨跌</th><th>主力净额</th></tr>')
+        # 降级源下拿不到「板块级主力净额」，但**成分红盘率仍有效**（名单来自 datacenter、
+        # 行情来自腾讯快照）。旧实现只看 zl_yi，会把已经取到的红盘率一并判成"数据不可用"扔
+        # 掉 —— 数据明明在手却说没有，与"伪造数据"是同一类失真，只是方向相反。
+        _has_n = any(v.get('n') for v in d['mood'].values())
+        t = ('<table><tr><th>情绪指标</th><th>板指涨跌</th><th>主力净额</th>'
+             + ('<th>成分红盘</th>' if _has_n else '') + '</tr>')
         for nm, v in d['mood'].items():
             zl_ = v.get('zl_yi')
+            _n, _up = v.get('n'), v.get('up')
+            _rc = (('—' if _up is None else '%d/%d（%.0f%%）' % (_up, _n, 100.0 * _up / _n))
+                   if _n else '—')
             t += (f"<tr><td>{esc(nm)}</td><td class='{cls(v.get('chg'))}'>"
                   f"{(pct(v['chg']) if v.get('chg') is not None else '—')}</td>"
                   f"<td class='num {cls(zl_)}'>"
-                  f"{(f'{zl_:+.2f} 亿' if zl_ is not None else '— 未取到')}</td></tr>")
+                  f"{(f'{zl_:+.2f} 亿' if zl_ is not None else '— 未取到')}</td>"
+                  + (f"<td class='num'>{_rc}</td>" if _has_n else '') + "</tr>")
         t += '</table>'
-        if not mv:
-            t += ('<p class="tiny">⚠️ 板块级主力净额未取到（盘前/限流），'
-                  '"价强钱撤"判定<b>不可用</b>，情绪面已按中性计、未加减分。</p>')
-            body += SC('昨日涨停系资金', t, cnt='数据不可用')
-        else:
+        if mv:
             negs = [v for v in mv if v['zl_yi'] < 0]
             if negs:
                 t += ('<p><b>"价强钱撤"</b>：板指在涨但主力净额为负——抬价的是中小资金，'
                       '大资金在借强势离场。此环境对接力型交易不友好。</p>')
             body += SC('昨日涨停系资金', t, tone=('warn' if negs else 'ok'),
                        cnt=('价强钱撤' if negs else '资金净流入'))
+        elif _has_n:
+            body += SC('昨日涨停系资金', t, tone='warn', cnt='口径降级 · 红盘率可用')
+            t2 = ('<p class="tiny">⚠️ <b>板块级主力净额</b>本次未取到（资金面数据源降级），'
+                  '"价强钱撤"判定<b>不可用</b>，情绪面该项按中性计、未加减分。'
+                  '但上表「成分红盘」仍为实测值（名单 + 行情两条通路都正常），'
+                  '可据此判断昨日涨停系的<b>接力赚钱效应</b>：红盘率越低，说明昨日涨停股'
+                  '今日被砸得越狠，接力环境越差。</p>')
+            body += SC('成分红盘率说明', t2)
+        else:
+            t += ('<p class="tiny">⚠️ 板块级主力净额与成分红盘均未取到，'
+                  '"价强钱撤"判定<b>不可用</b>，情绪面已按中性计、未加减分。</p>')
+            body += SC('昨日涨停系资金', t, cnt='数据不可用')
     if d.get('ladder_ok') is False:
         body += SC('连板梯队（真实扫描 streak）',
                    '<p>⚠️ 全市场涨幅字段未取到（盘前/限流），连板梯队<b>本次不可用</b>，'

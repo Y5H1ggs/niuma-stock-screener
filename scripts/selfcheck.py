@@ -191,10 +191,16 @@ def check_board_alignment(prof, tag='板块归属'):
         idx = ds.board_index()['by_name']
     except Exception:
         return [(WARN, tag, '板块索引取数失败')]
-    if prof.get('industry'):
-        ok = prof['industry'] in idx
-        out.append((OK, tag, '行业「%s」命中板块索引' % prof['industry']) if ok else
-                   (WARN, tag, '行业「%s」在板块索引中不存在（口径可能变更）' % prof['industry']))
+    # ⚠️ 必须检查**整条行业候选链**，不能只看最粗一级：
+    #   降级源（datacenter）下「电力设备」BK1200 不在行业报表的 128 个板块内，
+    #   但它的细分行业「电池」BK1033 在 —— 只看第一级会误报"口径变更"，
+    #   而实际上下游已经顺链命中了正确基准（假警报比不报警更消耗信任）。
+    inds = prof.get('industries') or ([prof['industry']] if prof.get('industry') else [])
+    if inds:
+        hit = [x for x in inds if x in idx]
+        out.append((OK, tag, '行业候选「%s」命中板块索引（取「%s」为基准）' % ('/'.join(inds), hit[0]))
+                   if hit else
+                   (WARN, tag, '行业候选「%s」全部未命中板块索引（口径可能变更）' % '/'.join(inds)))
     cs = prof.get('concepts') or []
     miss = [c for c in cs if c not in idx]
     out.append((OK, tag, '全部 %d 个概念命中板块索引' % len(cs)) if not miss else
