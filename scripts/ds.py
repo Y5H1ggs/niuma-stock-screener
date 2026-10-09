@@ -15,6 +15,7 @@ ds.py — A股 T+1 选股便携数据源库（纯标准库，零依赖）
 所有接口实测可用（2026-09）。限流降级链已内置。
 """
 import urllib.request, json, ssl, time, math, re
+import urllib.parse
 
 # ---------------------------------------------------------------- 基础
 import cfg                        # 个人参数（资金/权限/费用）全部外置到 config.json
@@ -39,16 +40,42 @@ EMOTION_BK = {'昨日涨停': 'BK0815', '昨日首板': 'BK1630', '昨日连板'
 #       `board_index()` 仍会发起 8 页 × 4 主机 = 32 次 get()，实测耗时 **234 秒**，
 #       而且持续请求只会延长阻断。熔断后本次运行快速失败。
 _BREAK = {'fails': 0, 'until': 0.0, 'tripped': False, 'hosts': set(), 'short_circuited': 0}
-BREAK_AFTER = 8         # 连续失败多少次触发熔断
+# ★ 按**主机族**独立熔断（P76 修正）：原实现是全局计数 —— 实测 2026-09-23 下午
+#   `board_index()` 因 push2 全灭连续失败后拉起全局熔断，**连带把 qt.gtimg.cn（腾讯快照）
+#   与 hq.sinajs.cn（新浪资金流）也一起短接**，表现为"新浪/腾讯也挂了"这种**假故障**，
+#   把可用源误判成不可用。现在每个主机族各记各的，一个族挂掉不影响其它族。
+_BREAK_BY_HOST = {}
+BREAK_AFTER = 8         # 同一主机族连续失败多少次触发熔断
 BREAK_COOLDOWN = 90.0   # 熔断冷却秒数
 
 
+def _fam(host):
+    """主机 → 主机族。
+    `push2` / `push2his` / `push2delay` / `82.push2` … 是**同一套后端**（一起挂、一起恢复），
+    归为一个族 'em-push2'；其余按域名各成一族（qt.gtimg.cn / hq.sinajs.cn / datacenter…）。"""
+    h = str(host).lower()
+    if 'push2' in h:
+        return 'em-push2'
+    return h
+
+
+def _bstate(host):
+    return _BREAK_BY_HOST.setdefault(
+        _fam(host), {'fails': 0, 'until': 0.0, 'tripped': False, 'short_circuited': 0})
+
+
 def breaker_state():
-    """熔断器状态：{'tripped': 是否触发, 'fails': 连续失败数, 'hosts': 涉及主机,
-    'short_circuited': 被快速失败的请求数, 'until': 冷却到期的 epoch}。"""
+    """熔断器状态（含各族明细 `families`）。
+    `tripped/fails/remain_s` 为**历史聚合值**（兼容旧调用方）；
+    判断"某个源还能不能用"必须看 `families[族名]`，不要看聚合值。"""
     s = dict(_BREAK)
     s['hosts'] = sorted(_BREAK['hosts'])
     s['remain_s'] = max(0.0, round(_BREAK['until'] - time.time(), 1))
+    now = time.time()
+    s['families'] = {k: {'fails': v['fails'], 'tripped': v['tripped'],
+                         'remain_s': max(0.0, round(v['until'] - now, 1)),
+                         'short_circuited': v['short_circuited']}
+                     for k, v in _BREAK_BY_HOST.items()}
     return s
 
 
@@ -56,6 +83,7 @@ def _reset_breaker():
     _BREAK['fails'] = 0
     _BREAK['until'] = 0.0
     _BREAK['tripped'] = False
+    _BREAK_BY_HOST.clear()
 
 
 def get(url, tries=3, enc='utf-8', ref='https://quote.eastmoney.com/', timeout=12, gap=0.8):
@@ -70,7 +98,9 @@ def get(url, tries=3, enc='utf-8', ref='https://quote.eastmoney.com/', timeout=1
     本次运行内直接快速失败，不再产生网络请求；状态用 `breaker_state()` 暴露。
     """
     host = url.split('/')[2] if '//' in url else url
-    if _BREAK['until'] > time.time():
+    st = _bstate(host)
+    if st['until'] > time.time():
+        st['short_circuited'] += 1
         _BREAK['hosts'].add(host)
         _BREAK['short_circuited'] += 1
         return None
@@ -79,16 +109,20 @@ def get(url, tries=3, enc='utf-8', ref='https://quote.eastmoney.com/', timeout=1
         try:
             req = urllib.request.Request(url, headers={'User-Agent': UA, 'Referer': ref})
             out = urllib.request.urlopen(req, timeout=timeout, context=CTX).read().decode(enc, 'ignore')
-            _reset_breaker()
+            st['fails'] = 0
+            st['tripped'] = False
+            _BREAK['fails'] = 0
             return out
         except Exception as e:
             last = e
             time.sleep(gap)
-    _BREAK['fails'] += 1
+    st['fails'] += 1
     _BREAK['hosts'].add(host)
-    if _BREAK['fails'] >= BREAK_AFTER:
-        if not _BREAK['tripped']:
-            _BREAK['tripped'] = True
+    _BREAK['fails'] += 1
+    if st['fails'] >= BREAK_AFTER:
+        st['tripped'] = True
+        st['until'] = time.time() + BREAK_COOLDOWN
+        _BREAK['tripped'] = True
         _BREAK['until'] = time.time() + BREAK_COOLDOWN
     return None
 
@@ -175,6 +209,8 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
     """全市场/板块成分列表。fid=f3 涨幅降序，fid=f62 主力净额降序。
     ⚠️ pz 最大 100（设 2000 不生效）。自动分页。"""
     rows = []
+    _m = {'fid': fid, 'fs': fs, 'pages_ok': 0, 'pages_failed': 0, 'total': None,
+          'truncated': False, 'at': time.strftime('%H:%M:%S')}
     for pn in range(1, pages + 1):
         url = (f'https://{EM_HOSTS[0]}/api/qt/clist/get?pn={pn}&pz={pz}&po=1&np=1&fltt=2&invt=2'
                f'&fid={fid}&fs={fs}&fields={fields}&ut={UT}')
@@ -183,19 +219,35 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
             # 换主机重试一次
             r = get(url.replace(EM_HOSTS[0], EM_HOSTS[1]))
         if not r:
+            # ⚠️ **这里只 break，不报错** —— 调用方拿到的是"少了几页"的列表，
+            #   和"全市场只有这么多"**长得一模一样**（P72/P79 同族：截断被伪装成"就这么多"）。
+            #   不改返回类型（会破坏全部调用方），改为把事实记进 `clist_meta()`。
+            _m['pages_failed'] += 1
+            _m['truncated'] = True
             break
         try:
             j = json.loads(r)
             diff = (j.get('data') or {}).get('diff') or []
+            total = (j.get('data') or {}).get('total', 0)
+            _m['total'] = total
             if not diff:
+                if pn * pz <= total:
+                    _m['truncated'] = True
+                    _m['empty_page'] = pn
                 break
             rows.extend(diff)
-            total = (j.get('data') or {}).get('total', 0)
+            _m['pages_ok'] += 1
             if pn * pz >= total:
                 break
         except Exception:
+            _m['pages_failed'] += 1
+            _m['truncated'] = True
             break
         time.sleep(0.25)
+    _m['rows'] = len(rows)
+    _m['complete'] = (not _m['truncated']) and (not _m['pages_failed'])
+    _CLIST_META.clear()
+    _CLIST_META.update(_m)
     # ★ G8 去重（2026-09-21）：东财分页在**实时排序**（fid=f3/f62，po=1 按值降序）下页间会重叠
     #   —— 同一只票可能同时出现在 pn=2 与 pn=3（实测 600479/600933/002687/603020 各出现两次）。
     #   不去重会让候选池虚增、同一票重复占据注意力，还会让"筛出 N 只"这类统计失真。
@@ -207,7 +259,25 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
             continue
         seen.add(k)
         uniq.append(x)
+    _m['uniq'] = len(uniq)
     return uniq
+
+
+_CLIST_META = {}
+
+
+def clist_meta():
+    """**最近一次 `clist()` 的完整性元信息**（非破坏性出口，不改 clist 的返回类型）：
+
+        {'fid','fs','pages_ok','pages_failed','total','truncated','empty_page',
+         'rows','uniq','complete','at'}
+
+    ⚠️ 为什么要它：`clist` 某页失败时只是 `break`，调用方拿到的是**少了几页**的列表，
+       与"全市场只有这么多"**无法区分**（P72/P79 同族）。凡是要拿 clist 结果做
+       "全量统计"（中位数/排名/筛出 N 只）的调用方，**必须先看 `complete`**：
+       不完整时只做展示、**不得据此下"全市场/板块内"的结论**。
+    """
+    return dict(_CLIST_META)
 
 
 # ---------------------------------------------------------------- 3. 个股资金（东财 ulist.np）
@@ -226,7 +296,10 @@ def ulist(codes, fields='f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87'
     url = f'https://push2.eastmoney.com/api/qt/ulist.np/get?secids={secids}&fields={fields}&ut={UT}'
     r = get(url)
     if not r:
-        return {}
+        # ★ P76 降级：push2 接口级 RST 时改走 datacenter-web（口径可交叉验证：
+        #   datacenter 的 PRIME_INFLOW 实测 == 超大单净 + 大单净 == push2 f62，同日同值）
+        fb = fund_flow_dc(codes)
+        return fb if fb else {}
     try:
         out = {}
         for x in (json.loads(r).get('data') or {}).get('diff') or []:
@@ -278,18 +351,35 @@ def slist(code, pz=60):
            f'&fields=f12,f13,f14&secid={secid(code)}&ut={UT}&pi=0&pz={pz}&po=1&np=1')
     r = get(url) or get(url.replace('push2delay', 'push2'))
     if not r:
+        # ★ P76 降级：datacenter 反查（比 slist 更全，多带 BOARD_TYPE / 入选理由）
+        bo = board_of(code)
+        if bo:
+            return [{'bk': x['bk'], 'name': x['name'], 'type': x.get('type'),
+                     'reason': x.get('reason'), '_src': 'dce'} for x in bo]
         return []
     try:
-        return [{'bk': x.get('f12'), 'name': x.get('f14')}
+        return [{'bk': x.get('f12'), 'name': x.get('f14'), '_src': 'push2'}
                 for x in (json.loads(r).get('data') or {}).get('diff') or []]
     except Exception:
         return []
 
 
 def sector_members(bk, fid='f3', pages=6):
-    """板块成分（分页取全量，避免"只取前100名导致误报排名"）。"""
-    return clist(fid=fid, fs=f'b:{bk}', pages=pages,
+    """板块成分（分页取全量，避免"只取前100名导致误报排名"）。
+
+    ★ P76 降级：clist 全灭 → datacenter 反查名单（**只给代码+名称，不给行情**）。
+      行情刻意留空（f3=None），交给 `sector_stats()` 既有的腾讯快照回退补齐 ——
+      这样 `src` 会被如实标成 'qq'/'dce+qq'，**不会把腾讯行情冒充成东财口径**。
+      f62 一律 None（datacenter 名单无个股资金）→ `zl_yi` 自然为 None，**不伪造 0**。"""
+    rows = clist(fid=fid, fs=f'b:{bk}', pages=pages,
                  fields='f12,f14,f2,f3,f62,f100')
+    if rows:
+        return rows
+    mem = board_members_dc(bk)
+    if mem:
+        return [{'f12': x['f12'], 'f14': x['f14'], 'f2': None, 'f3': None,
+                 'f62': None, 'f100': None, '_src': 'dce'} for x in mem]
+    return []
 
 
 def stock_profile(code):
@@ -302,12 +392,36 @@ def stock_profile(code):
       因此它才是可信的相对强度锚点。
       实证：标的乙 f127=电力（而其涨停故事在"碳化硅"题材里）；
             标的甲 f127=教育（主营 81% 是教育，此前却拿"通信技术"做对比 —— G9）。
+    ⚠️ **本函数有两条路径，返回的是两套不同的板块体系（P83）**：
+       · push2 在线 → 东财「股票所属板块」（f127/f129），`_src='push2'`；
+       · push2 掉线 → datacenter F10「**核心题材**」，`_src='dce'`，且多带 `industries` 候选链。
+       **两套的板块集合/粒度并不相同。调用方必须读 `_src` 并在输出里标明口径来源**，
+       跨时点比较必须各自重算后并列（同 P38）。
     返回 {} 表示取数失败（调用方必须按"不可用"处理，不得伪造）。"""
     u = (f'https://{EM_HOSTS[0]}/api/qt/stock/get?secid={secid(code)}'
          f'&fields=f57,f58,f127,f128,f129&ut={UT}')
     r = get(u) or get(u.replace(EM_HOSTS[0], EM_HOSTS[1]))
     if not r:
-        return {}
+        # ★ P76 降级：行业/概念改由 datacenter 板块归属推导
+        #   行业取 BOARD_TYPE='行业' 且 LEVEL 最小者（最粗的一级，与 f127 语义最接近）
+        bo = board_of(code)
+        if not bo:
+            return {}
+        inds = [x for x in bo if x.get('type') == '行业']
+        inds.sort(key=lambda x: _fl(x.get('level'), 99))
+        return {
+            'code': str(code), 'name': None,
+            'industry': (inds[0]['name'] if inds else None),
+            # ⚠️ 必须回传**整个行业候选链**（电力设备→电池→电池化学品）：
+            #   降级源下最粗的一级（如「电力设备」BK1200）可能不在 datacenter 行业报表里，
+            #   调用方需顺着候选往下找到"能在板块索引里命中"的那个，否则行业基准整个丢失，
+            #   P35「双基准取更不利者」会退化成单基准（自证校验会报警）。
+            'industries': [x['name'] for x in inds],
+            'area': None,
+            'concepts': [x['name'] for x in bo if x.get('type') != '行业' and x.get('name')],
+            'boards': bo, '_src': 'dce',
+            '_src_note': '东财 F10「核心题材」体系（带入选理由；板块集合与 push2 不同源）',
+        }
     try:
         d = json.loads(r).get('data') or {}
     except Exception:
@@ -320,6 +434,14 @@ def stock_profile(code):
         'industry': d.get('f127'),                       # 客观行业（每票恰一个）
         'area': d.get('f128'),
         'concepts': [c for c in str(d.get('f129') or '').split(',') if c.strip()],
+        # ★ P83：**两条路都必须写 `_src`**。此前只有 datacenter 分支写、push2 分支不写，
+        #   于是调用方无法分辨当前用的是哪套板块体系 —— 而两套的**板块集合并不相同**
+        #   （10-09 实测 002045：push2 f129 给 13 个概念；datacenter F10「核心题材」给 21 个，
+        #    多出"2026中报首亏/破增发价股/深股通/融资融券"等）。
+        #   静默换口径的降级链，比"直接报错"危险得多 —— 报告必须显示这个字段。
+        '_src': 'push2',
+        '_src_note': '东财「股票所属板块」体系（f127 行业 / f129 概念）',
+        'boards': None,          # push2 分支不提供带 reason 的板块明细，置 None（不是空列表）
     }
 
 
@@ -386,7 +508,8 @@ def board_index(refresh=False):
         seen = set()
         for pn in range(1, 9):
             # 熔断中：不再发请求（否则 8 页 × 4 主机 = 32 次重试，实测白跑 234 秒）
-            if _BREAK['tripped'] and _BREAK['until'] > time.time():
+            # ⚠️ 只看 push2 族自己的状态，不能看全局（否则腾讯/新浪的可用性与它耦合）
+            if _bstate(EM_HOSTS[0])['until'] > time.time():
                 meta['blocked'] = True
                 meta['truncated'].append('%s 余下页熔断跳过' % kind)
                 break
@@ -429,6 +552,34 @@ def board_index(refresh=False):
             if pn * 100 >= total:
                 break
             time.sleep(0.2)
+    if not by_name:
+        # ★ P76 降级：push2 clist 全灭 → 改用 datacenter 板块级资金流
+        #   ⚠️ datacenter 的 NET_INFLOW 是**板块级口径**，与 sector_stats 的 Σ成分不同源，
+        #      meta 里显式标 src='dce'，调用方必须据此标注，禁止与 Σ成分数值混用。
+        for kind2, kd in (('concept', '概念'), ('industry', '行业')):
+            bf = board_flow_dc(kind2)
+            meta['dce_%s' % kind2] = len(bf)
+            for bk, (nm, _k, zl, chg, _ex) in bf.items():
+                if not nm or bk in by_bk:
+                    continue
+                rec = (bk, kd, zl, chg)
+                by_bk[bk] = (nm, kd, zl, chg)
+                by_name.setdefault(nm, rec)
+        if by_name:
+            meta['src'] = 'dce'
+    else:
+        meta['src'] = 'push2'
+    # ★ 残页不入缓存（P83）：失败页会让索引**静默残缺**，表现为
+    #   "同一板块名这次命中、下次 None"，而残缺索引一旦进了进程缓存，
+    #   后续所有查询都被它污染 —— **且不报任何错**。
+    #   宁可下次重算（有熔断器兜底），也不拿一份有洞的索引当权威。
+    if meta['truncated'] or meta['blocked']:
+        meta['cached'] = False
+        meta['warn'] = ('索引存在残页（%s）→ 本次**不写入缓存**，下次调用会重算；'
+                        '调用方不得把"名字查不到"当成"该板块不存在"'
+                        % '、'.join(meta['truncated'][:6]))
+        return {'by_name': by_name, 'by_bk': by_bk, 'meta': meta}
+    meta['cached'] = True
     _BOARD_IDX.clear()
     _BOARD_IDX.update({'by_name': by_name, 'by_bk': by_bk, 'meta': meta})
     return _BOARD_IDX
@@ -453,6 +604,7 @@ def _snap_chg(codes, batch=60):
     """
     out = {}
     cl = [str(c) for c in codes if str(c)[:1] in '036']
+    today = time.strftime('%Y%m%d')
     for i in range(0, len(cl), batch):
         try:
             sp = snapshot(cl[i:i + batch])
@@ -461,6 +613,14 @@ def _snap_chg(codes, batch=60):
         for k, v in sp.items():
             if _fl(v.get('vol')) <= 0:
                 continue          # 盘前空壳 / 停牌：无昨收涨跌幅信息
+            ts = str(v.get('time') or '')
+            # ★ P82 快照日期校验：**必须是今日的**。
+            #   盘前（09:15 前）腾讯返回的是**上一交易日收盘**快照 —— vol>0、chg 是昨日涨幅，
+            #   vol 判据拦不住它。若直接采用，"昨日涨停"板块会算成 **红盘 48/48 = 100%**，
+            #   把"今天还没有数据"伪装成"接力环境极健康"。不报错、数字自洽、只是悄悄错
+            #   （与 P58/P75 同族）。实测同一函数盘后给 19/54（35%）、盘前给 48/48，**方向相反**。
+            if ts[:8].isdigit() and len(ts) >= 8 and ts[:8] != today:
+                continue
             if v.get('chg') is not None:
                 out[str(k)] = {'chg': v['chg'], 'price': v['price']}
     return out
@@ -493,7 +653,7 @@ def sector_stats(bk, fallback=True, pre=False):
     elif fallback:
         snaps = _snap_chg([x.get('f12') for x in rows])
         chg_by = {k: v['chg'] for k, v in snaps.items()}
-        src = 'qq'
+        src = 'dce+qq' if any(x.get('_src') == 'dce' for x in rows) else 'qq'
 
     if not chg_by:
         return {'n': len(rows), 'up': 0, 'zl_yi': None, 'median_chg': None,
@@ -509,6 +669,277 @@ def sector_stats(bk, fallback=True, pre=False):
     return {'n': len(rows), 'up': sum(1 for c in chg if c > 0), 'zl_yi': zl,
             'median_chg': round(med, 2), 'limit_up': lim, 'rows': rows,
             'ok': True, 'src': src, 'n_valid': len(chg_by), 'chg_by': chg_by}
+
+
+# ---------------------------------------------------------------- 5b. datacenter-web 降级通道
+# 背景（2026-09-23 实测，P76）：`*.push2*.eastmoney.com` 对本机做的是**接口级 RST**，不是 IP 级封禁：
+#   · 同一 IP、同一 SNI：`/`、`/api/qt/`、`/pub/x.js` 均返回 HTTP 404（通），
+#     而真正取数的 `/api/qt/<任意>/get` 一律在 **0.05~0.16 秒内被 RST（0 字节）**；
+#   · 换主机(82.push2/push2his/push2delay) / 换 ut / 换 HTTP 80 / 走代理 / 绕过代理 **全部无效**；
+#   · 同 IP 下 `datacenter-web.eastmoney.com`、`quote.eastmoney.com` **完全正常**；
+#   · 证书链验证为**真·东财证书**（DigiCert 签发 `*.eastmoney.com`）→ **不存在中间人**，
+#     故"路径可区分"只能是服务端策略，与出口 IP 无关。
+# 结论：push2 域整体不可用时，把 datacenter-web 作为资金面 / 板块面 / 板块归属的**降级源**。
+#
+# ⚠️⚠️ 口径铁律（P76）：datacenter 的 `RPT_CONCEPT_FUNDFLOW.NET_INFLOW` 是**东财板块级口径**，
+#   与 `sector_stats()` 的「Σ成分 f62」**可同号也可反号**，**禁止交叉比较、禁止互相替代**。
+#   实测同日锂电池概念：板块级 −38.62 亿 / Σ成分 +25.93 亿。所有降级返回值都带 `src`，调用方必须标注。
+DCE_HOST = 'datacenter-web.eastmoney.com'
+DCE_BASE = 'https://%s/api/data/v1/get?' % DCE_HOST
+
+# datacenter **独立**熔断器：绝不能与 push2 共用计数，否则 push2 挂掉会把 datacenter 一起短接。
+_DCE_BREAK = {'fails': 0, 'until': 0.0, 'tripped': False, 'short_circuited': 0}
+DCE_BREAK_AFTER = 6
+DCE_BREAK_COOLDOWN = 60.0
+
+
+def dce_state():
+    """datacenter 通道熔断器状态（与 push2 的 breaker_state() 相互独立）。"""
+    s = dict(_DCE_BREAK)
+    s['remain_s'] = max(0.0, round(_DCE_BREAK['until'] - time.time(), 1))
+    return s
+
+
+def dce_get(report, columns='ALL', flt=None, pz=50, page=1, sort=None, stype=-1,
+            timeout=14, tries=3, enc='utf-8'):
+    """datacenter-web 报表查询 → list[dict]（失败/空返回 []）。
+
+    ⚠️ 与 `get()` 分开实现：`get()` 的熔断器是**全局限流**，push2 全灭时会把 datacenter
+       的请求一并短接（这正是"一次故障拖垮所有源"的老问题）。此处独立计数。
+    ⚠️ 报表名不存在与"查得到但今日无数据"必须分开报：前者是写错报表名（永远空），
+       后者是正常情况。调用方按需区分 —— 本函数统一返回 []，用 `dce_probe()` 探名。
+    """
+    if _DCE_BREAK['until'] > time.time():
+        _DCE_BREAK['short_circuited'] += 1
+        return []
+    q = ['reportName=%s' % report, 'columns=%s' % columns,
+         'pageNumber=%d' % page, 'pageSize=%d' % pz]
+    if flt:
+        q.append('filter=' + urllib.parse.quote(flt, safe='()'))
+    if sort:
+        q.append('sortColumns=' + sort)
+        q.append('sortTypes=%d' % stype)
+    url = DCE_BASE + '&'.join(q)
+    last = None
+    for _ in range(tries):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': UA})
+            raw = urllib.request.urlopen(req, timeout=timeout, context=CTX).read().decode(enc, 'ignore')
+            j = json.loads(raw)
+            _DCE_BREAK['fails'] = 0
+            if not j.get('success'):
+                return []                      # 报表名错 / 今日无数据：不是网络故障，不计熔断
+            return ((j.get('result') or {}).get('data')) or []
+        except Exception as e:
+            last = e
+            time.sleep(0.8)
+    _DCE_BREAK['fails'] += 1
+    if _DCE_BREAK['fails'] >= DCE_BREAK_AFTER:
+        _DCE_BREAK['tripped'] = True
+        _DCE_BREAK['until'] = time.time() + DCE_BREAK_COOLDOWN
+    return []
+
+
+def dce_pages(report, flt=None):
+    """报表总页数（用于判断"取全了没"）。0 表示报表名不存在或查询失败。"""
+    q = ['reportName=%s' % report, 'columns=ALL', 'pageNumber=1', 'pageSize=1']
+    if flt:
+        q.append('filter=' + urllib.parse.quote(flt, safe='()'))
+    try:
+        req = urllib.request.Request(DCE_BASE + '&'.join(q), headers={'User-Agent': UA})
+        j = json.loads(urllib.request.urlopen(req, timeout=14, context=CTX).read().decode('utf-8', 'ignore'))
+        if not j.get('success'):
+            return 0
+        return ((j.get('result') or {}).get('pages')) or 0
+    except Exception:
+        return 0
+
+
+def fund_flow_dc(code, days=1):
+    """★ 降级：个股资金流（datacenter `RPT_DMSK_TS_STOCKNEW`）→ {代码: 字段dict}。
+
+    字段**刻意对齐 `ulist()` 的 f 编码**，便于在 `ulist()` 内部无缝降级：
+        f62 主力净额 = PRIME_INFLOW（实测 = 超大单净 + 大单净，口径可交叉验证 ✅）
+        f66 超大单净 = SUPERDEAL_INFLOW − SUPERDEAL_OUTFLOW
+        f72 大单净   = BIGDEAL_INFLOW − BIGDEAL_OUTFLOW
+    额外字段（datacenter 独有，很有价值）：cost 主力成本 / cost20 / cost60 /
+        org 机构参与度 / score 综合分 / rank 全市场排名 / focus 关注度。
+    ⚠️ 本报表**无中单/小单**（f78/f84）→ 这两个键**不写入**，调用方 `_ok()` 判定为不可用。
+    ⚠️ 只有日频、且是**当日收盘后入表**（15:05 前后）—— 盘中调用会拿到"上一交易日"。
+    返回 {} 表示失败（**不得伪造 0**）。"""
+    if isinstance(code, str):
+        code = [code]
+    out = {}
+    for c in code:
+        c = str(c)
+        rows = dce_get('RPT_DMSK_TS_STOCKNEW',
+                       flt='(SECURITY_CODE="%s")' % c, pz=max(1, days),
+                       sort='TRADE_DATE', stype=-1)
+        if not rows:
+            continue
+        r = rows[0]
+        sup = _fl(r.get('SUPERDEAL_INFLOW')) - _fl(r.get('SUPERDEAL_OUTFLOW'))
+        big = _fl(r.get('BIGDEAL_INFLOW')) - _fl(r.get('BIGDEAL_OUTFLOW'))
+        prime = r.get('PRIME_INFLOW')
+        rec = {
+            'f12': c,
+            'f14': r.get('SECURITY_NAME_ABBR'),
+            'f62': prime if _ok(prime) else (sup + big if (sup or big) else None),
+            'f66': sup,
+            'f72': big,
+            'f2': r.get('CLOSE_PRICE'),
+            'f3': r.get('CHANGE_RATE'),
+            'date': str(r.get('TRADE_DATE') or '')[:10],
+            'cost': r.get('PRIME_COST'), 'cost20': r.get('PRIME_COST_20DAYS'),
+            'cost60': r.get('PRIME_COST_60DAYS'), 'org': r.get('ORG_PARTICIPATE'),
+            'score': r.get('TOTALSCORE'), 'rank': r.get('RANK'), 'focus': r.get('FOCUS'),
+            'ratio': r.get('RATIO'), 'ratio3': r.get('RATIO_3DAYS'),
+            'turnover': r.get('TURNOVERRATE'),
+            '_src': 'dce', '_days': rows,
+        }
+        out[c] = rec
+    return out
+
+
+def fund_flow_days_dc(code, n=12):
+    """★ 降级：个股资金流**历史序列**（近 n 个交易日）→ [(日期, 主力净额, 超大单净, 大单净), …] 升序。
+    用途：替代 `fflow(code, klt=101)` 画"近 n 日主力净额"柱子图。"""
+    rows = dce_get('RPT_DMSK_TS_STOCKNEW', flt='(SECURITY_CODE="%s")' % str(code),
+                   pz=max(1, n), sort='TRADE_DATE', stype=-1)
+    out = []
+    for r in rows:
+        sup = _fl(r.get('SUPERDEAL_INFLOW')) - _fl(r.get('SUPERDEAL_OUTFLOW'))
+        big = _fl(r.get('BIGDEAL_INFLOW')) - _fl(r.get('BIGDEAL_OUTFLOW'))
+        out.append((str(r.get('TRADE_DATE') or '')[:10],
+                    _fl(r.get('PRIME_INFLOW')), sup, big))
+    out.sort(key=lambda z: z[0])
+    return out
+
+
+def board_flow_dc(kind='concept', date=None, pz=600):
+    """★ 降级：**板块级**资金流 → {bk: (名称, kind, 主力净额亿, 涨跌%)}。
+
+    ⚠️ 口径 = **东财板块级**，与 `board_index()`（push2 clist 的 f62）同源可比值；
+       但**绝不等于** `sector_stats()['zl_yi']`（那是 Σ成分 f62）—— 二者可反号，禁止混用。
+    kind: 'concept'→RPT_CONCEPT_FUNDFLOW / 'industry'→RPT_INDUSTRY_FUNDFLOW
+    date: 'YYYY-MM-DD'，None=取最新交易日（按 TRADE_DATE 降序第一页反查）。
+    """
+    rep = 'RPT_CONCEPT_FUNDFLOW' if kind == 'concept' else 'RPT_INDUSTRY_FUNDFLOW'
+    if not date:
+        probe = dce_get(rep, pz=1, sort='TRADE_DATE', stype=-1)
+        if not probe:
+            return {}
+        date = str(probe[0].get('TRADE_DATE') or '')[:10]
+    rows = dce_get(rep, flt="(TRADE_DATE='%s')" % date, pz=pz, sort='NET_INFLOW', stype=-1)
+    out = {}
+    for r in rows:
+        bk = str(r.get('BOARD_CODE') or '')
+        if not bk.startswith('BK'):
+            bk = 'BK' + bk.zfill(4)
+        out[bk] = (r.get('BOARD_NAME'), kind, _fl(r.get('NET_INFLOW')) / 1e8,
+                   _fl(r.get('CHANGE_RATE')) if _ok(r.get('CHANGE_RATE')) else None,
+                   {'sup': _fl(r.get('SUPERDEAL_NET')) / 1e8,
+                    'big': _fl(r.get('BIGDEAL_NET')) / 1e8,
+                    'mid': _fl(r.get('MIDDEAL_NET')) / 1e8,
+                    'small': _fl(r.get('SMALLDEAL_NET')) / 1e8})
+    return out
+
+
+def board_of(code, pz=40):
+    """★ 降级：个股**真实板块归属**（datacenter `RPT_F10_CORETHEME_BOARDTYPE`）。
+    返回 [{'bk': 'BK0574', 'name': '锂电池概念', 'type': '行业'|'概念'|…, 'reason': 入选理由}]，按相关度排序。
+    替代被封的 `slist()`；且**比 slist 更全**（多带 BOARD_TYPE / 入选理由）。
+    ⚠️ 报表里的 BOARD_CODE 无 "BK" 前缀（如 "574"），此处统一补成 "BK0574" 以便与 push2 代码互通。"""
+    rows = dce_get('RPT_F10_CORETHEME_BOARDTYPE', flt='(SECURITY_CODE="%s")' % str(code),
+                   pz=pz, sort='BOARD_RANK', stype=1)
+    out = []
+    for r in rows:
+        c = str(r.get('BOARD_CODE') or '')
+        if not c:
+            continue
+        if not c.startswith('BK'):
+            c = 'BK' + c.zfill(4)
+        out.append({'bk': c, 'name': r.get('BOARD_NAME'),
+                    'type': r.get('BOARD_TYPE'), 'level': r.get('BOARD_LEVEL'),
+                    'reason': r.get('SELECTED_BOARD_REASON')})
+    return out
+
+
+def board_members_dc(bk, pz=500, max_pages=8):
+    """★ 降级：板块**成分股名单**（反查 `RPT_F10_CORETHEME_BOARDTYPE`）。
+    只给代码+名称（**不含行情**）—— 行情必须另走 `_snap_chg()`（腾讯批量），
+    因为 datacenter 该报表没有个股当日涨跌幅字段。
+
+    ⚠️ 必须 `pz>=500` + 翻页：实测"锂电池概念"有 **442** 个成分、"储能概念" **486** 个，
+       而 `pz=200` 时服务端**静默只回前 200 条**（不报错、`success=True`），
+       表现为"成分名单里找不到本股" → 进而把"板块内排名"算成"不在该板块"
+       （与 P72「空页≠失败页」同族：**截断被伪装成"没有"**）。
+    ⚠️ 返回 [] 时**不得**当成"板块空"—— 可能是报表限流，调用方须标"不可用"。"""
+    c = str(bk)
+    if c.startswith('BK'):
+        c = c[2:].lstrip('0') or '0'
+    out, seen = [], set()
+    for pg in range(1, max_pages + 1):
+        rows = dce_get('RPT_F10_CORETHEME_BOARDTYPE', flt='(BOARD_CODE="%s")' % c,
+                       pz=pz, page=pg)
+        if not rows:
+            break
+        for r in rows:
+            cd = str(r.get('SECURITY_CODE') or '')
+            if cd and cd not in seen:
+                seen.add(cd)
+                out.append({'f12': cd, 'f14': r.get('SECURITY_NAME_ABBR')})
+        if len(rows) < pz:
+            break
+        time.sleep(0.15)
+    return out
+
+
+def moneyflow_sina(code, n=12):
+    """★ 降级：新浪**资金流历史序列** → [(日期, 净流入额, 特大单净额, 涨跌幅%, 收盘, 换手%), …] **升序**。
+    用途：push2 `fflow/daykline` 不可用时，替代"近 n 日主力净额"柱状图。
+
+    ⚠️ 口径是**新浪自己的**（`netamount`=净流入额、`r0_net`=特大单净额），
+       **不等于东财 f52/f62** —— 图上必须标注 `src=sina`，**禁止与东财数值同图相加或直接比较**。
+    ⚠️ `Referer` 必须是新浪自己的域名：给 `quote.eastmoney.com` 会 **403**（实测 2026-09-23）。
+    ⚠️ 数据**当日收盘后入表**，盘中调用末条为上一交易日（与 P74 同族，须核对日期对齐）。"""
+    sym = tsym(code)
+    url = ('https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/'
+           'MoneyFlow.ssl_qsfx_zjlrqs?page=1&num=%d&sort=opendate&asc=0&daima=%s' % (n, sym))
+    raw = get(url, ref='https://finance.sina.com.cn/')
+    if not raw:
+        return []
+    try:
+        out = []
+        for x in json.loads(raw):
+            cr = x.get('changeratio')
+            out.append((str(x.get('opendate') or ''),
+                        _fl(x.get('netamount')), _fl(x.get('r0_net')),
+                        round(_fl(cr) * 100, 2) if _ok(cr) else None,
+                        _fl(x.get('trade')) if _ok(x.get('trade')) else None,
+                        _fl(x.get('turnover')) if _ok(x.get('turnover')) else None))
+        out.sort(key=lambda z: z[0])
+        return out
+    except Exception:
+        return []
+
+
+def flow_days_any(code, n=12):
+    """近 n 日主力净额 → `(rows, src)`，rows **升序**、统一 6 元组格式：
+        (日期, 主力净额, 小单, 中单, 大单, 超大单)   —— 与 `fflow()` 输出对齐，便于直接替换。
+
+    优先东财 `fflow(klt=101)`；失败降级新浪 `moneyflow_sina()`。
+    ⚠️ **src 必须一路传到渲染层**：`'em'` 与 `'sina'` 是**两套不可比的口径**，
+       且新浪源**没有**小单/中单/大单（位置为 None），图上必须显式标注，
+       绝不能把两种源的柱子画成同一序列还标同一个单位。
+    ⚠️ 两源都失败 → `([], None)`，渲染层必须按"该图不可用"处理，**不得补 0 画空柱**。"""
+    ks = fflow(code, klt=101, lmt=n)
+    if ks:
+        return ([(str(x[0])[:10], x[1], x[2], x[3], x[4], x[5]) for x in ks][-n:], 'em')
+    sn = moneyflow_sina(code, n)
+    if sn:
+        return ([(d, zl, None, None, None, r0) for d, zl, r0, _c, _p, _to in sn][-n:], 'sina')
+    return ([], None)
 
 
 # ---------------------------------------------------------------- 6. K线三源
@@ -632,9 +1063,14 @@ def mood(pre=False):
                 st = sector_stats(bk, pre=pre)
             except Exception:
                 st = {'ok': False, 'zl_yi': None, 'up': 0, 'n': 0}
+            # ⚠️ ok=False（含"快照非今日""成分行情取不到"）时 up/n 必须置 None：
+            #   否则 st 里残留的 n=48/up=0 会被渲染层当成有效红盘率，印出「0/48（0%）」——
+            #   把"没数据"伪装成"红盘率 0%"（与 P81 同族，方向相反）。
+            _oks = bool(st.get('ok'))
             out[name] = {'chg': None,
-                         'zl_yi': st.get('zl_yi') if st.get('ok') else None,
-                         'up': st.get('up'), 'n': st.get('n')}
+                         'zl_yi': st.get('zl_yi') if _oks else None,
+                         'up': (st.get('up') if _oks else None),
+                         'n': (st.get('n') if _oks else None)}
     return out
 
 
@@ -715,25 +1151,145 @@ def mom(c, n=10):
 
 
 def pos(c_highs, c_lows, live, n=60):
+    """位置百分位：(live − n 日最低) / (n 日最高 − n 日最低) × 100。
+
+    ⚠️ **序列长度不足 n 时返回 `None`（不可用），不再静默缩小窗口。**
+    为什么（P84，2026-10-09 实测）：
+      原实现是 `max(h[-n:])` —— 序列不足 n 时 Python 切片**静默退化为"全部可用"**，
+      于是调用方写 `ds.kline(code, 130)` 却把它当"250 日位置"用，
+      实测同一只票 **24.1%（130 日）vs 10.0%（真 250 日），差 14 个百分点**，
+      而这个值还参与评分（`pos<35 → +2 分`）。
+      **"少了就少算"是最难发现的一类错：不报错、数字自洽、只是悄悄错。**
+
+    想同时拿到"差多少根"用 `pos_ex()`；调用方**必须自己处理 None**
+    （P67：`None` 进 `%`/f-string 会直接崩）。
+    """
+    if not c_highs or not c_lows:
+        return None
+    if len(c_highs) < n or len(c_lows) < n:
+        return None
     w_h, w_l = max(c_highs[-n:]), min(c_lows[-n:])
     return (live - w_l) / (w_h - w_l) * 100 if w_h != w_l else 50.0
 
 
+def pos_ex(c_highs, c_lows, live, n=60):
+    """带元信息的位置（推荐入口）：
+    `{'pct': float|None, 'n_req': n, 'n_have': 可用根数, 'ok': bool}`。
+
+    凡是要把位置印进报告 / 参与打分的调用方一律用它 ——
+    这样"不可用"能被**如实标注**，而不是被一个缩了窗口的数字冒充。
+    """
+    nh = min(len(c_highs or []), len(c_lows or []))
+    v = pos(c_highs, c_lows, live, n)
+    return {'pct': v, 'n_req': n, 'n_have': nh, 'ok': v is not None}
+
+
 def indicators(closes, highs=None, lows=None, live=None):
-    """一次算全套。live 传当日实时价（拼入序列尾部）。"""
+    """一次算全套。live 传当日实时价（拼入序列尾部）。
+
+    ⚠️ `pos60`/`pos250` 在序列长度不足时返回 **`None`**（P84），调用方必须处理；
+       同时回传 `pos60_ok`/`pos250_ok`/`n_hist`，便于如实标注「不可用（仅 N 根）」。
+       要 250 日位置，喂进来的序列**至少要有 250 根**（建议 260~300）。
+    """
     c = list(closes)
     h = list(highs) if highs else c
     l = list(lows) if lows else c
+    n_hist = min(len(c), len(h), len(l))
     if live is not None:
         c.append(live); h.append(live); l.append(live)
+    _p60 = pos_ex(h, l, c[-1], 60)
+    _p250 = pos_ex(h, l, c[-1], 250)
     return {
         'ma5': ma(c, 5), 'ma10': ma(c, 10), 'ma20': ma(c, 20), 'ma60': ma(c, 60),
         'bull': (ma(c, 5) > ma(c, 10) > ma(c, 20) > ma(c, 60)) if len(c) >= 60 else None,
         'boll': boll(c), 'macd': macd(c),
         'rsi6': rsi(c, 6), 'rsi14': rsi(c, 14), 'rsi24': rsi(c, 24),
         'cci20': cci(h, l, c, 20), 'wr14': wr(h, l, c, 14), 'mom10': mom(c, 10),
-        'pos60': pos(h, l, c[-1], 60), 'pos250': pos(h, l, c[-1], 250),
+        'pos60': _p60['pct'], 'pos250': _p250['pct'],
+        'pos60_ok': _p60['ok'], 'pos250_ok': _p250['ok'], 'n_hist': n_hist,
     }
+
+
+# ---------------------------------------------------------------- 8b. 标准量比
+def _elapsed_min():
+    """当日已开盘分钟数（09:30 起算，剔除 11:30~13:00 午休，上限 240）。0 = 盘前。"""
+    t = time.localtime()
+    m = t.tm_hour * 60 + t.tm_min
+    if m < 570:
+        return 0
+    if m <= 690:
+        return m - 570
+    if m < 780:
+        return 120
+    if m <= 900:
+        return 120 + (m - 780)
+    return 240
+
+
+def vol_ratio(code, live_vol=None, lb=None):
+    """**标准「量比」**（行情软件口径，P84）：
+
+        量比 = (当日累计成交量 ÷ 当日已开盘分钟数) ÷ (近 5 个【完整】交易日总量 ÷ 240)
+
+    ★ 这就是行情软件里显示的那个"量比"。它和两种常见的自造口径都**不是一回事**：
+      · 「当日累计 ÷ 20 日**全天**均量」—— 盘中必然 < 1，**它测的其实是"今天过了多少时间"**
+        （实测 10:12 开盘 42 分钟，四只票一律 0.29~0.45；同刻真实量比是 2.53~3.82）；
+      · 「近 3 日均量 ÷ 前 20 日均量」—— 含今日半日量，且窗口随 K 线**末根是不是今天**漂移。
+      **名字叫"量比"就必须是量比，否则改名**（P84：擅自盗用行情软件术语 =
+      主动制造一个永远对不上的对照物）。
+
+    实现优先级：
+      1) 传入 `lb`（腾讯快照 `f49`）→ **直接采信**，它就是该口径；
+      2) 否则用 K 线自算，且**今日未走完的那根一律剔除**（否则把半日量当整日量）。
+      盘前（elapsed=0）无法定义 → `ok=False`；收盘后 elapsed=240 → 退化为"全天量 ÷ 5 日均量"
+      （即行情软件的收盘量比）。
+
+    返回 `{'vr','src','elapsed_min','today_vol','avg5','ok','note'}`；**绝不返回 0 冒充失败**。
+    """
+    el = _elapsed_min()
+    out = {'vr': None, 'src': None, 'elapsed_min': el, 'today_vol': None,
+           'avg5': None, 'ok': False, 'note': ''}
+    if el <= 0:
+        out['note'] = '盘前（09:30 前）无当日成交量，量比不可用'
+        return out
+    if lb is not None:
+        try:
+            v = float(lb)
+            if v > 0:
+                out.update(vr=v, src='qq.lb', ok=True,
+                           note='腾讯快照 f49（= 行情软件口径）')
+                return out
+        except (TypeError, ValueError):
+            pass
+    # 自算：必须剔除今日未走完的那根
+    k = kline_list(code, 300)
+    if not k:
+        out['note'] = 'K 线取数失败'
+        return out
+    today = time.strftime('%Y-%m-%d')
+    tb = k[-1] if k[-1]['d'] == today else None
+    hist = k[:-1] if tb else k
+    if len(hist) < 5:
+        out['note'] = '完整交易日不足 5 天（仅 %d 天），量比不可用' % len(hist)
+        return out
+    tv = live_vol if live_vol is not None else (tb['v'] if tb else None)
+    if not tv or tv <= 0:
+        out['note'] = '无当日成交量（K 线末根为上一交易日且未传 live_vol）'
+        return out
+    avg5 = sum(x['v'] for x in hist[-5:]) / 5.0
+    if avg5 <= 0:
+        out['note'] = '近 5 完整日均量为 0'
+        return out
+    out.update(vr=(tv / el) / (avg5 / 240.0), src='self', today_vol=tv, avg5=avg5, ok=True,
+               note='自算：(%.0f 手 ÷ %d 分) ÷ (%.0f 手 ÷ 240 分)' % (tv, el, avg5))
+    return out
+
+
+def vol_ratio_of(code, snap=None):
+    """便捷封装：有快照就用快照的 `lb` 与 `vol`，否则退回 `vol_ratio()` 自算。"""
+    if snap is None:
+        snap = (snapshot([code]) or {}).get(code) or {}
+    return vol_ratio(code, live_vol=snap.get('vol'), lb=snap.get('lb'))
 
 
 # ---------------------------------------------------------------- 9. 财务时点数据（PIT）

@@ -43,18 +43,45 @@ def analyze(code, show_top=8):
         print('slist 未返回板块信息')
         return
 
-    results = []
+    results, failed, srcs, qsrcs = [], [], set(), set()
+    import ds as _ds          # 延迟导入：只用它的腾讯快照回退，避免改动本文件的 import 行
     for s in sector:
         bk, nm = s['bk'], s['name']
+        if s.get('_src'):
+            srcs.add(s['_src'])
         if is_attr(nm):
             continue
         rows = sector_members(bk, pages=8)
         if not rows:
+            # ★ P83：取数失败的板块**必须报出来**，不能静默丢 ——
+            #   原实现 `continue` 之后，"这个板块不存在"和"这个板块取数失败"
+            #   在报告里长得一模一样（实测：个别票整张表空白却毫无提示）。
+            failed.append('%s(%s)' % (nm, bk))
             continue
+        # ★ P83 补：降级源 `board_members_dc` 只给「代码+名称」、**不带行情**，
+        #   直接过滤 f3 会让整张表空白（实测限流期 17/17 板块全空）。
+        #   此处用**腾讯快照**把涨跌幅补回来，并把行情来源如实记进 qsrcs ——
+        #   腾讯行情 ≠ 东财行情，口径必须可见（不得把腾讯数据冒充成东财口径）。
+        _miss = [x for x in rows if x.get('f3') is None and x.get('f12')]
+        if _miss:
+            _fills = _ds._snap_chg([str(x['f12']) for x in _miss])
+            for x in _miss:
+                _f = _fills.get(str(x['f12']))
+                if _f and _f.get('chg') is not None:
+                    x['f3'] = _f['chg']
+            if any(x.get('f3') is not None for x in _miss):
+                qsrcs.add('qq')
+        if not any(x.get('f3') is not None for x in rows):
+            qsrcs.add('em')
         chg = [_fl(x.get('f3')) for x in rows if x.get('f3') is not None]
         if not chg:
+            failed.append('%s(%s)行情整块取不到' % (nm, bk))
             continue
-        zl = sum(_fl(x.get('f62')) for x in rows) / 1e8
+        # ★ 主力净额：无 f62 时置 **None**，不得用 0 冒充 ——
+        #   `_fl(None)` 会变 0.0，于是限流期整列印成 "+0.00 亿"，
+        #   读起来像"资金平衡"，实际是"这个字段根本没取到"（P81 同族）。
+        _zlv = [_fl(x.get('f62')) for x in rows if _ds._ok(x.get('f62'))]
+        zl = (sum(_zlv) / 1e8) if _zlv else None
         chg_sorted = sorted(chg, reverse=True)
         med = chg_sorted[len(chg_sorted) // 2]
         codes_sorted = sorted(rows, key=lambda x: -_fl(x.get('f3')))
@@ -64,19 +91,38 @@ def analyze(code, show_top=8):
             'bk': bk, 'name': nm, 'n': len(rows), 'up': sum(1 for c in chg if c > 0),
             'zl': zl, 'med': med, 'rank': rank,
             'rel': round(tgt_chg - med, 2),
+            # 成分数正好落在整页边界 → **疑似分页截断**（P79：截断被伪装成"就这么多"）
+            'trunc': (len(rows) >= 100 and len(rows) % 100 == 0),
             'limit': [(str(x.get('f12')), x.get('f14')) for x in ups[:6]],
         })
 
-    # 按板块主力净额降序（资金最猛的板块优先），取前 N
-    results.sort(key=lambda r: -r['zl'])
+    # 有主力数据的按资金降序排前；无数据的排后面（**不拿 0 参与排序**）
+    results.sort(key=lambda r: -(r['zl'] if r['zl'] is not None else -1e9))
     results = results[:show_top]
 
     print(f"{'板块':<12}{'成分':>5}{'红盘':>5}{'主力亿':>9}{'中位%':>8}{'个股%':>8}{'相对':>7}{'排名':>7}  涨停")
     for r in results:
         flag = '🔴跑输' if r['rel'] < -0.5 else ('✅领先' if r['rel'] > 0.5 else '持平')
         lim = ' '.join(f'{n}' for _, n in r['limit'])
-        print(f"{r['name'][:11]:<12}{r['n']:>5}{r['up']:>5}{r['zl']:>+9.2f}{r['med']:>+8.2f}"
+        zls = ('%+.2f' % r['zl']) if r['zl'] is not None else '—'
+        nstr = ('%d~' % r['n']) if r['trunc'] else str(r['n'])
+        print(f"{r['name'][:11]:<12}{nstr:>5}{r['up']:>5}{zls:>9}{r['med']:>+8.2f}"
               f"{tgt_chg:>+8.2f}{r['rel']:>+7.2f}{str(r['rank']):>7}  {flag} {lim}")
+
+    print('\n口径与完整性：')
+    print('  · 板块归属来源 _src：%s' % ('、'.join(sorted(srcs)) or '未标注'))
+    print('  · 成分行情来源：%s%s' % ('、'.join(sorted(qsrcs)) or '未标注',
+          '（em=东财 clist 自带；qq=腾讯快照回退，**无 f62** → 主力列显示「—」而不是 0）'
+          if 'qq' in qsrcs else ''))
+    print('  · 主力亿 = Σ成分 f62（**与"板块级口径"不可交叉比较**，同名 ≠ 同物）；'
+          '「—」= 该字段未取到，**不等于 0**')
+    print('  · 成分数带「~」= 正好落在整页边界，**疑似分页截断**（排名/中位数按截断样本算，偏乐观）')
+    if failed:
+        print('  · ⚠️ %d 个板块**取数失败被跳过**（不是"该股不属于它"）：%s'
+              % (len(failed), '、'.join(failed[:10])))
+        print('    缺失会让"相对强度/涨停名单"这一栏偏乐观，**不得据此断定"没有别的板块"**。')
+    else:
+        print('  · 全部 %d 个板块取数成功，无跳过。' % len(results))
 
     print('\n判读：')
     print('  · 相对强度 < -0.5 个百分点 = 资金在该方向选了别的票（铁律1 高危）')

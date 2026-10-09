@@ -167,8 +167,10 @@ def main():
     print('=' * 104)
     print('  现价 %.2f (%+.2f%%)  样本区间 %s ~ %s (%d 根)' % (
         s['price'], s['chg'], k[0]['d'], k[-1]['d'], len(k)))
-    print('  今日形态: RSI14 %.1f | BOLL %%B %.1f | CCI20 %.1f | MOM10 %+.1f%% | pos250 %.1f%%' % (
-        t['rsi14'], t['pctb'], t['cci'], t['mom'], t['pos250']))
+    _p250 = t.get('pos250')
+    print('  今日形态: RSI14 %.1f | BOLL %%B %.1f | CCI20 %.1f | MOM10 %+.1f%% | pos250 %s' % (
+        t['rsi14'], t['pctb'], t['cci'], t['mom'],
+        ('%.1f%%' % _p250) if _p250 is not None else '不可用（K 线不足 250 根）'))
     print('  均线结构: %s | 站上MA5: %s | 近5日 %+.2f%%' % (
         '空头排列' if t['bear'] else ('多头排列' if t['bull'] else '纠缠'),
         t['above5'], t['g5']))

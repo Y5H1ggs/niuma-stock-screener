@@ -100,9 +100,16 @@ def build_feats(k):
 
 def backtest_dsl(k, fs, expr, label):
     env = {'abs': abs, 'min': min, 'max': max, 'round': round}
-    hits = []
+    hits, skipped = [], 0
     for i, f in enumerate(fs):
         if not f or i + 1 >= len(k):
+            continue
+        # ⚠️ P84：样本不足 250 根时 `pos250` 为 None（不再用缩窗口的数字冒充 250 日位置）。
+        #   规则若用到它，本样本**跳过**，而不是把 None 当 False 计入分母 ——
+        #   后者会把"无法评估"静默算成"未命中"，**系统性压低命中率**。
+        #   （改前实测：i=60 的"250 日位置"实际只用 61 根 K 线算出来。）
+        if 'pos250' in expr and f.get('pos250') is None:
+            skipped += 1
             continue
         try:
             ok = eval(expr, {'__builtins__': {}}, dict(f, **env))
@@ -123,7 +130,7 @@ def backtest_dsl(k, fs, expr, label):
                     (nx['h'] / buy - 1) * 100, (nx['l'] / buy - 1) * 100, nx['d']))
     n = len(res)
     return {
-        'label': label, 'n': n,
+        'label': label, 'n': n, 'skipped': skipped,
         'wc': sum(1 for r in res if r[1] > 0) / n * 100,
         'ac': sum(r[1] for r in res) / n,
         'wo': sum(1 for r in res if r[0] > 0) / n * 100,

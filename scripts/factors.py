@@ -173,8 +173,12 @@ def daily_factors(k, i, fin, last_fin=None):
         'above20': c > ma20, 'bull': ma5 > ma10 > ma20 > ma60,
         'rsi14': ds.rsi(cl, 14), 'cci20': ds.cci(hi, lo, cl, 20),
         'wr14': ds.wr(hi, lo, cl, 14), 'pctb': b['pctb'],
+        # ⚠️ P84：pos60 / pos250 在历史不足时返回 None（不再用缩窗口的数字冒充）。
+        #   本模块的 IC 计算**已经会跳过 None**（`compute_ic` 里 `if v is None ... continue`），
+        #   所以保持 None 是对的 —— 如实剔除样本，好过喂一个假位置进去。
         'pos60': ds.pos(hi, lo, c, 60), 'pos250': ds.pos(hi, lo, c, 250),
-        'dist_hi250': (c / max(hi[-250:]) - 1) * 100,
+        # dist_hi250 同族：`hi[-250:]` 在不足 250 根时会静默退化 → 必须同样置 None
+        'dist_hi250': ((c / max(hi[-250:]) - 1) * 100) if len(hi) >= 250 else None,
         'vr': (k[i]['v'] / avgv) if avgv else 1.0,
         'vr5': (k[i]['v'] / mean([k[j]['v'] for j in range(max(0, i - 5), i)])) if i >= 6 else 1.0,
         'amt': 0.0, 'hs': 0.0,
