@@ -312,6 +312,7 @@ python scripts/risk.py status     # ③ 账户是否处于回撤熔断期
 | `smoketest.py` | **随机票全链路冒烟 + 已知错误模式扫描**（改完代码就跑一遍） |
 | `check_privacy.py` | **提交前隐私闸门**（暂存区 / 提交信息 / 全量 / 历史 四模式；禁词清单放仓库外） |
 | `install_hooks.py` | **一条命令重装隐私钩子 + 端到端自检**（`.git/hooks` 不进版本库，换机器后必跑） |
+| `make_release.py` | **把指定版本发布成 GitHub Release**：正文**从 `CHANGELOG.md` 自动提取**该版本段落（单一来源，**不会与 CHANGELOG 各说各话**）；同 tag 已存在则 **PATCH 更新**。用法 `GITHUB_TOKEN=… python scripts/make_release.py v1.2.17`，`--dry` 可先看正文 |
 | `charts.py` | **纯 SVG 图表**（零依赖/无 JS/可导出 PDF）：K线+均线+成交量 · 资金流柱状 · 板块相对强度对比 · **回测逐笔高低范围** · 收益分布直方。报告已接入 5 张图 |
 
 > ⚠️ **`ds.kline()` 返回二元组** `(K线数组, 源名)`，**不是数组**（P55）。
