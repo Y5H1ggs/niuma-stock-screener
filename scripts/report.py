@@ -40,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cfg
 import ds
 import charts
+import factor_report as FR      # ★ v1.2.18：多因子分析章节（只列**已过检验**的因子）
 from ds import (_fl, _ok, snapshot, ulist, fflow, slist, sector_stats, kline_qq,
                 indicators, kdj, mood, n100, allowed, tsym, get, MARKET_MAIN)
 
@@ -836,8 +837,54 @@ def auto_judge(d):
     return pb, nb
 
 
+def _wilson(k, n, z=1.96):
+    """Wilson 95% 置信区间 → (下限%, 上限%)。比例型指标的**唯一可信表达**。
+
+    ★ 为什么必须用它：`p = k/n` 在小样本下会给出 `13/13 = 100%` 这种**绝对表述** ——
+      既不诚实（真实概率完全可能只有 80%），也违反本项目"禁止绝对化措辞"的铁律。
+      Wilson 区间在 p=0 或 1 时**依然有宽度**（这是它优于正态近似的关键），
+      恰好能把"13 个样本全中"翻译成"下限约 77%"。
+    """
+    if not n or n <= 0:
+        return None, None
+    p = k / n
+    d = 1 + z * z / n
+    c = p + z * z / (2 * n)
+    r = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)
+    return max(0.0, (c - r) / d) * 100, min(1.0, (c + r) / d) * 100
+
+
+def _pct_phrase(p, n):
+    """把比例（百分数）转成**不许绝对化**的表述 → `(概率文本, 区间文本)`。
+
+    · `p ≥ 99.5%` → 写「全样本命中（k/n）」，**不写 100%**
+    · `p ≤ 0.5%`  → 写「全样本未现（0/n）」，**不写 0%**
+    · 其余 → 「约 x%」
+    并**一律附 Wilson 95% 区间**；N<30 时额外提示"区间很宽、不可外推"。
+    """
+    if not n:
+        return '—', '样本不足，无法给出概率'
+    k = int(round(p / 100.0 * n))
+    lo, hi = _wilson(k, n)
+    if p >= 99.5:
+        txt = '全样本命中（%d/%d）' % (k, n)
+    elif p <= 0.5:
+        txt = '全样本未现（0/%d）' % n
+    else:
+        txt = '约 %.0f%%' % p
+    rng = '95%% 置信区间 %.0f~%.0f%%（N=%d）' % (lo, hi, n)
+    if n < 30:
+        rng += '，<b>样本小、区间宽，不可外推</b>'
+    return txt, rng
+
+
 def auto_scenarios(d):
-    """由回测主形态的统计推导概率（规则生成，人工可覆盖）。"""
+    """由回测主形态的统计推导概率（规则生成，人工可覆盖）。
+
+    ★ v1.2.20 起：**任何概率都必须附 Wilson 95% 置信区间**，且**禁止 0% / 100% 的绝对表述**。
+      触发这处修改的实例：13 个样本全中时原实现直接印「约 100%」——
+      读者会把它当成"必然发生"，而它真实的 95% 置信下限只有约 77%。
+    """
     bt = d.get('bt') or []
     if not bt:
         return [], None
@@ -854,15 +901,21 @@ def auto_scenarios(d):
             break
     if hit is None:
         hit = max(bt, key=lambda r: (r['n'] >= 10, r['win_close']))
+    n = hit['n']
+    p_low, r_low = _pct_phrase(100 - hit['win_open'], n)
+    p_2, r_2 = _pct_phrase(hit['p_2'], n)
+    p_up, r_up = _pct_phrase(hit['win_close'], n)
+    p_bk, r_bk = _pct_phrase(hit['p_break'], n)
     rows = [
-        ('次日低开', f"约 {100 - hit['win_open']:.0f}%",
-         f"该形态开盘卖胜率仅 {hit['win_open']:.0f}%，次日开盘均值 {hit['avg_open']:+.2f}%"),
-        ('次日盘中冲到 ≥+2%，给出兑现窗口', f"约 {hit['p_2']:.0f}%",
-         f"次日最高均值 {hit['avg_high']:+.2f}%"),
-        ('次日收盘为正', f"约 {hit['win_close']:.0f}%",
-         f"样本 N={hit['n']}，收盘卖均值 {hit['avg_close']:+.2f}%"),
-        ('次日跌破 −3%（进入纪律区）', f"约 {hit['p_break']:.0f}%",
-         f"次日最低均值 {hit['avg_low']:+.2f}%"),
+        ('次日低开', p_low,
+         '%s；该形态开盘卖胜率 %.0f%%、次日开盘均值 %+.2f%%'
+         % (r_low, hit['win_open'], hit['avg_open'])),
+        ('次日盘中冲到 ≥+2%，给出兑现窗口', p_2,
+         '%s；次日最高均值 %+.2f%%' % (r_2, hit['avg_high'])),
+        ('次日收盘为正', p_up,
+         '%s；收盘卖均值 %+.2f%%' % (r_up, hit['avg_close'])),
+        ('次日跌破 −3%（进入纪律区）', p_bk,
+         '%s；次日最低均值 %+.2f%%' % (r_bk, hit['avg_low'])),
     ]
     return rows, hit
 
@@ -1517,9 +1570,12 @@ def build(d, notes):
             return (f"<td class='num {cls(v)}'>{v / 1e4:+.0f}</td>"
                     if isinstance(v, (int, float)) else "<td class='num'>—</td>")
 
-        for tm, zl, xs, zs, dsz, xos in d['flow_days']:
-            t += (f"<tr><td>{tm[-5:]}</td>" + _cell(zl) + _cell(xs) + _cell(zs)
-                  + _cell(dsz) + _cell(xos) + "</tr>")
+        # ★ 顺序由 ds.flow_days_any 统一为 (日期, 主力, 超大单, 大单, 中单, 小单) —— 与表头一致。
+        #   v1.2.19 前该元组是 (…, 小单, 中单, 大单, 超大单) 的**反序**，渲染时整列错位，
+        #   且新浪降级的"特大单"被显示成"小单"。已修。
+        for tm, zl, cdd, ddd, zdd, xdd in d['flow_days']:
+            t += (f"<tr><td>{tm[-5:]}</td>" + _cell(zl) + _cell(cdd) + _cell(ddd)
+                  + _cell(zdd) + _cell(xdd) + "</tr>")
         t += '</table>'
         signs = ' '.join(('+' if _fl(x[1]) > 0 else '−') for x in d['flow_days'])
         neg = sum(1 for x in d['flow_days'] if _fl(x[1]) < 0)
@@ -1527,8 +1583,14 @@ def build(d, notes):
               f'负值 {neg}/{len(d["flow_days"])} 天。单位：万元。</p>')
         if _fsrc == 'sina':
             t += ('<p class="tiny">⚠️ 数据来源为 <b>新浪资金流</b>（东财 '
-                  '<code>fflow/daykline</code> 本次不可用）。新浪的主净额与特大单口径'
-                  '与东财<b>不可直接比较</b>，且无超大/大/中/小单拆分，故后四列显示「—」。</p>')
+                  '<code>fflow/daykline</code> 本次不可用）。新浪只提供「主力净额 + 特大单」两档，'
+                  '故「超大单」列填的是<b>新浪的特大单</b>（与东财超大单<b>口径不可直接比较</b>），'
+                  '「大单 / 中单 / 小单」三列无数据、显示「—」—— '
+                  '<b>是"取不到"，不是 0</b>，不得据此判断资金结构。'
+                  '<br>★ <b>想让这三列有值：收盘后稍等片刻重跑本报告即可</b> —— '
+                  '东财 <code>fflow</code> 属 push2 族，今日该族接口时通时断；'
+                  '本项目的降级顺序是「东财 fflow → 新浪」，'
+                  '<b>不会</b>用新浪的特大单去冒充东财的超大单（口径混用是更严重的错）。</p>')
         elif _fsrc == 'em':
             t += '<p class="tiny">数据来源：东财 <code>fflow/daykline</code>。</p>'
         body += SC('资金结构（日线级，近 12 日）', t)
@@ -1582,11 +1644,22 @@ def build(d, notes):
         _chk_k = charts.candlestick_svg(_kl, n=55,
                                         title='近 55 日 K 线 · MA5/10/20 · 成交量（红涨绿跌）'
                                         ) if len(_kl) >= 20 else ''
+        # ★ 多因子分析（v1.2.18）：只展示**已过 Bonferroni 校正**的因子。
+        #   失败就整块不显示 —— **绝不用编造的因子值填充**（P85 一族）。
+        _mf_sc = ''
+        try:
+            _snap = FR.snapshot(d.get('code') or '')
+            if _snap and _snap.get('items'):
+                _mf_sc = SC('多因子分析（仅列已过检验的因子）', FR.html_table(_snap),
+                            cnt='信号日 %s · %d 个因子' % (_snap['date'], len(_snap['items'])))
+        except Exception:
+            _mf_sc = ''
         A(C('四、技术分析',
             (_chk_k and SC('K 线走势与量能', _chk_k, cnt='近 60 个交易日') or '')
             + SC('趋势与通道（均线 / BOLL）', t1, cnt='平台参数面板口径')
             + SC('动量与超买超卖（MACD / RSI / CCI / KDJ / WR / MOM）', t2)
-            + SC('量能与位置', t3),
+            + SC('量能与位置', t3)
+            + _mf_sc,
             badge='全指标 · 日线级'))
 
     # ===== 五、回测 =====
@@ -1658,13 +1731,24 @@ def build(d, notes):
     if notes.get('verdict'):
         body += SC('结论', notes['verdict'], cnt='人工研判')
     if sc_rows:
-        t = '<table><tr><th>情景</th><th>概率</th><th>依据</th></tr>'
+        t = '<table><tr><th>情景</th><th>概率</th><th>依据（含置信区间）</th></tr>'
         for a, b_, c_ in sc_rows:
-            t += (f"<tr><td><b>{a}</b></td><td class='up'><b>{b_}</b></td><td>{c_}</td></tr>")
+            # ★ 颜色按**语义**而非"数值大小"：偏多情景标红、偏空情景标绿（A 股习惯红涨绿跌）。
+            #   原实现一律 class='up'（红），导致"跌破 −3%"也显示成红色 —— 语义反了。
+            _neg = ('低开' in a) or ('跌破' in a)
+            t += (f"<tr><td><b>{a}</b></td>"
+                  f"<td class='{'dn' if _neg else 'up'}'><b>{b_}</b></td>"
+                  f"<td>{c_}</td></tr>")
         t += '</table>'
-        t += ('<p class="tiny">概率来自历史形态统计；样本量小的形态须再下调一档。'
-              '当前情绪环境见下节。</p>')
-        body += SC('情景 × 概率', t, cnt='高概率已标红')
+        t += ('<p class="tiny">'
+              '① 概率 = 该形态历史样本中的**命中比例**，<b>2026-10-09 起一律附 Wilson 95% 置信区间</b>；'
+              '<br>② <b>不出现 0% / 100% 的绝对表述</b> —— 若样本全部命中，写作「全样本命中（k/N）」'
+              '并给出置信下限（例如 13/13 的 95% 下限只有约 77%）；'
+              '<br>③ <b>N &lt; 30 时区间很宽，只能当方向性参考，不可外推</b>；'
+              '样本量小的形态须再下调一档；'
+              '<br>④ 颜色按语义：偏多标红、偏空标绿（红涨绿跌）；'
+              '⑤ 当前情绪环境见下节。</p>')
+        body += SC('情景 × 概率', t, cnt='附置信区间')
     if notes.get('watch'):
         body += SC('盘中／尾盘需要盯的数',
                    '<ol>' + ''.join(f'<li>{x}</li>' for x in notes['watch']) + '</ol>',
@@ -1680,7 +1764,9 @@ def build(d, notes):
         # 行情来自腾讯快照）。旧实现只看 zl_yi，会把已经取到的红盘率一并判成"数据不可用"扔
         # 掉 —— 数据明明在手却说没有，与"伪造数据"是同一类失真，只是方向相反。
         _has_n = any(v.get('n') for v in d['mood'].values())
-        t = ('<table><tr><th>情绪指标</th><th>板指涨跌</th><th>主力净额</th>'
+        # ★ v1.2.20：push2 挂掉时这两列由**兜底口径**填充（成分中位数 / Σ成分），
+        #   与板块级口径不同 → 表头打星、脚注说明，**禁止与板块级数字交叉比较**。
+        t = ('<table><tr><th>情绪指标</th><th>涨跌幅 *</th><th>主力净额 †</th>'
              + ('<th>成分红盘</th>' if _has_n else '') + '</tr>')
         for nm, v in d['mood'].items():
             zl_ = v.get('zl_yi')
@@ -1693,6 +1779,18 @@ def build(d, notes):
                   f"{(f'{zl_:+.2f} 亿' if zl_ is not None else '— 未取到')}</td>"
                   + (f"<td class='num'>{_rc}</td>" if _has_n else '') + "</tr>")
         t += '</table>'
+        # 口径脚注：说明 * / † 是什么，以及**为什么不能用它跟板块级数字比**
+        _srcs = sorted({v.get('zl_src') for v in d['mood'].values() if v.get('zl_src')})
+        _csrcs = sorted({v.get('chg_src') for v in d['mood'].values() if v.get('chg_src')})
+        if _srcs or _csrcs:
+            t += ('<p class="tiny">'
+                  '<b>* 涨跌幅</b>：%s；<b>† 主力净额</b>：%s。'
+                  '<br>⚠️ 二者均为<b>兜底口径</b>，与「板块指数涨跌 / 板块级主力净额」'
+                  '<b>不是同一个东西</b> —— 板块级口径需 push2 族接口（本次不可用）。'
+                  '★ <b>两套口径当日可以反号（历史实测锂电概念：板块级 −38.6 亿 vs Σ成分 +25.9 亿），'
+                  '故只可内部参考，禁止与板块级数字交叉比较</b>。'
+                  '<br>需要板块级口径时，收盘后稍等重跑本报告即可。</p>'
+                  % ('、'.join(_csrcs) or '—', '、'.join(_srcs) or '—'))
         if mv:
             negs = [v for v in mv if v['zl_yi'] < 0]
             if negs:
@@ -1702,11 +1800,16 @@ def build(d, notes):
                        cnt=('价强钱撤' if negs else '资金净流入'))
         elif _has_n:
             body += SC('昨日涨停系资金', t, tone='warn', cnt='口径降级 · 红盘率可用')
-            t2 = ('<p class="tiny">⚠️ <b>板块级主力净额</b>本次未取到（资金面数据源降级），'
-                  '"价强钱撤"判定<b>不可用</b>，情绪面该项按中性计、未加减分。'
-                  '但上表「成分红盘」仍为实测值（名单 + 行情两条通路都正常），'
-                  '可据此判断昨日涨停系的<b>接力赚钱效应</b>：红盘率越低，说明昨日涨停股'
-                  '今日被砸得越狠，接力环境越差。</p>')
+            t2 = ('<p class="tiny">⚠️ <b>板块级主力净额</b>本次未取到，原因已定位到具体接口：'
+                  '该字段来自东财 <code>clist</code>（push2 族），本次返回 <b>0 行</b>（接口级阻断/限流）。'
+                  '<br>• <b>为何不用降级源补？</b> datacenter 的板块资金报表'
+                  '（<code>RPT_CONCEPT_FUNDFLOW</code>）<b>只覆盖标准概念 / 行业板块</b>，'
+                  '而「昨日涨停 / 首板 / 连板」是东财的 <b>行情系自定义板块</b>'
+                  '（BK0815 / BK1630 / BK0816），该报表里查不到 —— <b>实测确认，不是推测</b>。'
+                  '<br>• <b>为何不用成分合计凑？</b> Σ成分 ≠ 板块级口径（两者同日可以反号），'
+                  '本项目据此明令<b>禁止交叉比较</b> —— 宁缺勿滥。'
+                  '<br>• <b>仍然可用的</b>：上表「成分红盘」是<b>实测值</b>（名单 + 行情两条通路均正常），'
+                  '据此仍可判断接力赚钱效应：<b>红盘率越低，说明昨日涨停股今日被砸得越狠，接力环境越差</b>。</p>')
             body += SC('成分红盘率说明', t2)
         else:
             t += ('<p class="tiny">⚠️ 板块级主力净额与成分红盘均未取到，'

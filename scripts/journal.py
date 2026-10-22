@@ -217,12 +217,40 @@ def set_cash(v, note=''):
 
 
 def _sync_account_from_trades():
-    """卖出后把卖出净得加回现金；买入占用在 add_trade 时由调用方处理。"""
+    """把**尚未入账**的已平仓交易的卖出净得加回现金（**幂等**）。
+
+    ★ v1.2.22 修：旧实现的注释写着"卖出后把卖出净得加回现金"，
+      但**代码里只有 `peak_equity` 的更新，`cash` 从来没被改过** ——
+      意味着**平仓后钱永远不回到账上**，此后所有"可买股数 / 费用测算 / 资金占用"
+      都基于一个偏低的假现金（本次实测：平掉 4,192.86 元后 cash 仍是 982.78）。
+
+    ★ 为什么用 `synced_trades` 而不是重算全量：
+      历史 5 笔的 `cash` 是**人工维护**的基线，重算会覆盖掉用户真实出入金记录。
+      因此只做**增量**：把还没加过的平仓交易加一次，记入 `synced_trades` 防重复。
+
+    ⚠️ 与 `add_trade` 的关系：买入侧**不扣现金**（保持历史行为），
+      所以这里只加卖出净得 —— 两边不对称，但改变买入侧会破坏已有基线。
+      **若要彻底对称，应同时改 `add_trade` 并迁移历史**（未做，风险高）。
+    """
     ts = _load(P_TRADES, [])
     acc = account()
-    # 用"最近一次同步点"之后的已平仓交易累加，避免重复计入
     done = [t for t in ts if t['sell_date'] is not None]
-    acc['peak_equity'] = max(acc.get('peak_equity') or 0.0, float(cfg.get('cash') or 0.0) + sum(t['pnl'] or 0 for t in done))
+    synced = set(acc.get('synced_trades') or [])
+    delta, newly = 0.0, []
+    for t in done:
+        if t['id'] in synced:
+            continue
+        v = float(t.get('sell_total') or 0.0)
+        if v:
+            delta += v
+            newly.append(t['id'])
+    if delta:
+        acc['cash'] = round(float(acc.get('cash') or 0.0) + delta, 2)
+        acc['synced_trades'] = sorted(synced | set(newly))
+    else:
+        acc['synced_trades'] = sorted(synced)
+    acc['peak_equity'] = max(acc.get('peak_equity') or 0.0,
+                             float(acc.get('cash') or 0.0) + 0.0)
     acc['updated'] = _today()
     _save(P_ACCOUNT, acc)
     return acc
