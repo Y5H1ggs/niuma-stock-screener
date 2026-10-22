@@ -14,7 +14,7 @@ ds.py — A股 T+1 选股便携数据源库（纯标准库，零依赖）
 
 所有接口实测可用（2026-09）。限流降级链已内置。
 """
-import urllib.request, json, ssl, time, math, re
+import urllib.request, json, ssl, time, math, re, sys
 import urllib.parse
 
 # ---------------------------------------------------------------- 基础
@@ -248,6 +248,19 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
     _m['complete'] = (not _m['truncated']) and (not _m['pages_failed'])
     _CLIST_META.clear()
     _CLIST_META.update(_m)
+    # ★ v1.2.23：**不完整必须喊出来**（此前只记进 clist_meta()，不主动查就看不到）。
+    #   实测 2026-10-22：clist 只取到 1920/5563（涨幅降序前 20 页），
+    #   却给出「涨 753 / 跌 765、中位 +0.00%、Σ主力 +40.8 亿」，
+    #   **与创业板指 −3.05% 完全矛盾**。
+    #   ★ 根因不是"少了几页"，是**采样方向偏了**：fid=f3 降序只覆盖涨幅榜上半段，
+    #     用它算涨跌家数会系统性高估"上涨比例"。**这是 P91（样本偏差）的实时版**。
+    if not _m['complete']:
+        print('[ds.clist] ⚠️ 数据不完整：%d/%s 行（pages_ok=%d failed=%d truncated=%s）'
+              ' —— 涨跌家数 / 主力合计等 **汇总统计一律不可用**，'
+              '只能当作「涨幅降序的前 %d 条」使用；要全市场口径请改用指数 + board_index()。'
+              % (len(rows), _m.get('total'), _m.get('pages_ok', 0),
+                 _m.get('pages_failed', 0), _m.get('truncated'), len(rows)),
+              file=sys.stderr)
     # ★ G8 去重（2026-09-21）：东财分页在**实时排序**（fid=f3/f62，po=1 按值降序）下页间会重叠
     #   —— 同一只票可能同时出现在 pn=2 与 pn=3（实测 600479/600933/002687/603020 各出现两次）。
     #   不去重会让候选池虚增、同一票重复占据注意力，还会让"筛出 N 只"这类统计失真。
@@ -626,6 +639,40 @@ def _snap_chg(codes, batch=60):
     return out
 
 
+_STOCK_FLOW_POOL = {}
+
+
+def stock_flow_pool(pages=12, verbose=False):
+    """全市场个股主力净额池 `{code: PRIME_INFLOW(元)}`（**进程内缓存**）。
+
+    ★ 存在意义：push2 挂掉时 `sector_members` 的 `f62` 会**整列为空**，
+      此时板块资金就没了（报告里显示「— 未取到」）。
+      本函数用东财 datacenter 的**全市场个股资金报表一次分页取完**（实测 5200 只 / 约 5 秒），
+      再按板块成分求和 → **把板块资金救回来**。
+
+    ⚠️ **口径必须标注**：这是 **Σ成分**，与 `board_index()` 的**板块级口径不是一回事**
+      （同日可以反号，历史实测锂电概念：板块级 −38.62 亿 vs Σ成分 +25.93 亿）。
+      两者**只能并列展示，禁止交叉比较**（项目铁律）。
+    """
+    if _STOCK_FLOW_POOL:
+        return _STOCK_FLOW_POOL
+    for pg in range(1, pages + 1):
+        r = dce_get('RPT_DMSK_TS_STOCKNEW', pz=500, page=pg)
+        if not r:
+            break
+        for x in r:
+            c = str(x.get('SECURITY_CODE') or '')
+            v = x.get('PRIME_INFLOW')
+            if c and v is not None:
+                _STOCK_FLOW_POOL[c] = v
+        if len(r) < 500:
+            break
+        time.sleep(0.35)
+    if verbose:
+        print('    全市场个股资金池：%d 只' % len(_STOCK_FLOW_POOL))
+    return _STOCK_FLOW_POOL
+
+
 def sector_stats(bk, fallback=True, pre=False):
     """板块统计：家数/红盘数/主力合计/涨幅中位数/涨停名单/个股绝对排名。
     实现铁律 1（相对强度）+ 情绪温度。
@@ -662,12 +709,21 @@ def sector_stats(bk, fallback=True, pre=False):
     chg = list(chg_by.values())
     zl_valid = [_fl(x.get('f62')) for x in rows if _ok(x.get('f62'))]
     zl = (sum(zl_valid) / 1e8) if zl_valid else None
+    zl_src = 'em-∑成分' if zl_valid else None
+    if zl is None and not pre:
+        # ★ push2 的 f62 整列为空 → 用**全市场个股资金池**按成分求和兜底。
+        #   （实测：BK0815 等"行情系板块"的成分 f62 全空，但个股在全市场报表里都有）
+        _pool = stock_flow_pool()
+        _vals = [_pool[str(x.get('f12'))] for x in rows if str(x.get('f12')) in _pool]
+        if _vals:
+            zl = sum(_vals) / 1e8
+            zl_src = 'dce-∑成分'
     chg_sorted = sorted(chg)
     med = chg_sorted[len(chg_sorted) // 2]
     lim = [(x.get('f12'), x.get('f14'), chg_by.get(str(x.get('f12'))))
            for x in rows if (chg_by.get(str(x.get('f12'))) or 0) >= 9.7]
     return {'n': len(rows), 'up': sum(1 for c in chg if c > 0), 'zl_yi': zl,
-            'median_chg': round(med, 2), 'limit_up': lim, 'rows': rows,
+            'zl_src': zl_src, 'median_chg': round(med, 2), 'limit_up': lim, 'rows': rows,
             'ok': True, 'src': src, 'n_valid': len(chg_by), 'chg_by': chg_by}
 
 
@@ -930,20 +986,29 @@ def moneyflow_sina(code, n=12):
 
 
 def flow_days_any(code, n=12):
-    """近 n 日主力净额 → `(rows, src)`，rows **升序**、统一 6 元组格式：
-        (日期, 主力净额, 小单, 中单, 大单, 超大单)   —— 与 `fflow()` 输出对齐，便于直接替换。
+    """近 n 日资金流 → `(rows, src)`，rows **升序**、统一 6 元组：
+        **(日期, 主力净额, 超大单, 大单, 中单, 小单)**
 
-    优先东财 `fflow(klt=101)`；失败降级新浪 `moneyflow_sina()`。
-    ⚠️ **src 必须一路传到渲染层**：`'em'` 与 `'sina'` 是**两套不可比的口径**，
-       且新浪源**没有**小单/中单/大单（位置为 None），图上必须显式标注，
-       绝不能把两种源的柱子画成同一序列还标同一个单位。
-    ⚠️ 两源都失败 → `([], None)`，渲染层必须按"该图不可用"处理，**不得补 0 画空柱**。"""
+    ⚠️ **v1.2.19 修顺序 BUG**：东财 `fflow` 的原生顺序是
+       `(日期, 主力, 小单, 中单, 大单, 超大单)` —— **与报告表头正好相反**，
+       旧实现原样返回，导致渲染层把「小单」当「超大单」显示、
+       把「超大单」当「小单」显示（**列全错位**）。
+       现统一转成**与产品表头一致**的顺序，调用方不需要再猜。
+
+    ⚠️ **新浪降级源的字段归位**：新浪只有「特大单净额」→ 归到**超大单**列，
+       中/大/小单**置 None（不填 0）**。旧实现把特大单塞进了"小单"列，语义完全错。
+       ⚠️ 且新浪「特大单」与东财「超大单」**口径不可直接比较**，src 必须传到渲染层标注。
+
+    ⚠️ 两源都失败 → `([], None)`，渲染层按"该表不可用"处理，**不得补 0**。"""
     ks = fflow(code, klt=101, lmt=n)
     if ks:
-        return ([(str(x[0])[:10], x[1], x[2], x[3], x[4], x[5]) for x in ks][-n:], 'em')
+        # 东财原生 (d, 主力, 小, 中, 大, 超大) → 目标 (d, 主力, 超大, 大, 中, 小)
+        return ([(str(x[0])[:10], x[1], x[5], x[4], x[3], x[2]) for x in ks][-n:], 'em')
     sn = moneyflow_sina(code, n)
     if sn:
-        return ([(d, zl, None, None, None, r0) for d, zl, r0, _c, _p, _to in sn][-n:], 'sina')
+        # 新浪 (d, 主力净额, 特大单净额, 涨跌幅, 收盘, 换手×100)
+        #   → 特大单归「超大单」列，其余三列无数据置 None
+        return ([(d, zl, r0, None, None, None) for d, zl, r0, _c, _p, _to in sn][-n:], 'sina')
     return ([], None)
 
 
@@ -1072,8 +1137,23 @@ def mood(pre=False):
             #   否则 st 里残留的 n=48/up=0 会被渲染层当成有效红盘率，印出「0/48（0%）」——
             #   把"没数据"伪装成"红盘率 0%"（与 P81 同族，方向相反）。
             _oks = bool(st.get('ok'))
-            out[name] = {'chg': None,
-                         'zl_yi': st.get('zl_yi') if _oks else None,
+            # ★ v1.2.21：**资金与行情要分开判断**。
+            #   盘前 sector_stats 会因"实时行情不可用"返回 ok=False，
+            #   但 `PRIME_INFLOW` 来自 datacenter（**上一交易日收盘后即有**）→ **盘前完全可用**。
+            #   旧实现把两者绑在 ok 上，导致盘前连资金一起丢掉（明明能算却报"未取到"）。
+            zl_ = st.get('zl_yi') if _oks else None
+            zl_src_ = st.get('zl_src') if _oks else None
+            if zl_ is None:
+                _pool = stock_flow_pool()
+                _v = [_pool[str(x.get('f12'))] for x in (st.get('rows') or [])
+                      if str(x.get('f12')) in _pool]
+                if _v:
+                    zl_ = sum(_v) / 1e8
+                    zl_src_ = 'dce-∑成分'
+            out[name] = {'chg': (st.get('median_chg') if _oks else None),
+                         'chg_src': ('成分中位数' if _oks else None),
+                         'zl_yi': zl_,
+                         'zl_src': zl_src_,
                          'up': (st.get('up') if _oks else None),
                          'n': (st.get('n') if _oks else None)}
     return out
@@ -1377,6 +1457,153 @@ __all__ = ['snapshot', 'clist', 'ulist', 'fflow', 'fflow_at', 'slist', 'sector_m
            'ma', 'ema', 'rsi', 'boll', 'macd', 'cci', 'kdj', 'wr', 'mom', 'pos',
            'indicators', 'allowed', 'secid', 'tsym', 'n100', 'get', 'UT', 'MARKET_MAIN',
            'financials', 'fundamentals_at', 'announce_calendar']
+
+
+# ---------------------------------------------------------------- 10. 外部源扩充（v1.2.18）
+# ★ 2026-10-09 实测接入三路**免费 / 无需 token / 纯 HTTP** 的新源：
+#   ① 巨潮资讯 cninfo —— 官方公告与定期报告（**证监会指定披露平台**）
+#   ② 东财 datacenter `RPT_F10_EH_EQUITY` —— 股本结构（**带公告日，天然 PIT**）
+#   ③ 东财 datacenter `RPT_DMSK_FN_{BALANCE,INCOME,CASHFLOW}` —— 三大报表
+#
+# ⚠️ **实测淘汰的源（别再试）**：
+#   · 雪球 xueqiu —— 只拿到 `acw_tc`、缺 `xq_a_token` 时**稳定 400**，需复杂 cookie 流程 → 不接入
+#   · 同花顺 quantapi / iFinD —— **付费产品**（iFinD 年费 ≈2.88 万起）→ 不接入，保持零成本
+#   · 同花顺 F10 页面 —— HTTP 200 但**内容是 JS 渲染**，HTML 里搜不到"总股本" → 不可解析
+#   · 东财 `RPT_VALUEANALYSIS_DET` —— **报表名不存在**（返回成功但零行，属 P85 一族）
+
+_CNINFO_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+              '(KHTML, like Gecko) Chrome/126.0 Safari/537.36')
+
+
+def announcements(code, n=20):
+    """巨潮资讯（cninfo）公告 → `[(日期, 标题, 类型, PDF链接), …]` **倒序**（最新在前）。
+
+    src = `cninfo`。**证监会指定的信息披露平台**，公告与财报的**官方原文**来源。
+
+    ⚠️ **用途定位**：行情类问题**不要**用它（行情走腾讯/新浪/东财）。
+      它的独特价值在**事件与口径** —— "某件事官方究竟哪天披露的""财报原文怎么写的"。
+    ⚠️ 免费、无需 token；接口是 POST 表单且 **`Referer` 必填**（缺失会被拒）。
+    ⚠️ **会限流**：实测连续请求十几次后，**连茅台都返回 0 条**，且间隔 25 秒重试 4 次仍未恢复。
+       —— 现象是 **HTTP 200 + `totalAnnouncement=0`**，**静默**，与"这只票真的没有公告"长得一模一样。
+       故**本函数只适合低频调用**（如出报告时查一次）；**不要放进循环**。
+       要判断"是不是被限流"，用 `cninfo_alive()` 拿茅台当探针。
+    """
+    if not code:
+        return []
+    sym = tsym(code)
+    if sym.startswith('sz'):
+        mkt, stock = 'szse', '%s,gssz%s' % (code, code)
+    elif sym.startswith('sh'):
+        mkt, stock = 'sse', '%s,gssh%s' % (code, code)
+    else:
+        return []
+    body = urllib.parse.urlencode({
+        'stock': stock, 'tabName': 'fulltext', 'pageSize': str(n), 'pageNum': '1',
+        'column': mkt, 'category': '', 'plate': '', 'seDate': '', 'searchkey': '',
+        'secid': '', 'sortName': '', 'sortType': '', 'isHLtitle': 'true',
+    }).encode()
+    try:
+        req = urllib.request.Request(
+            'http://www.cninfo.com.cn/new/hisAnnouncement/query', data=body,
+            headers={'User-Agent': _CNINFO_UA,
+                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                     # ⚠️ **Referer 必须是这一条具体路径**：只给根域 `http://www.cninfo.com.cn/`
+                     #   会 **HTTP 200 + 0 条**（静默拒绝）—— 又一次「成功但空」，
+                     #   与 P85 一族同源（"没有"被伪装成"没有数据"）。实测 2026-10-09。
+                     'Referer': 'http://www.cninfo.com.cn/new/commonUrl?url=disclosure/list/notice'})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode('utf-8', 'replace'))
+    except Exception:
+        return []
+    out = []
+    for a in (d.get('announcements') or []):
+        ts = a.get('announcementTime')
+        try:
+            day = time.strftime('%Y-%m-%d', time.localtime(ts / 1000)) if ts else ''
+        except Exception:
+            day = ''
+        url = ('http://static.cninfo.com.cn/' + a['adjunctUrl']) if a.get('adjunctUrl') else ''
+        out.append((day, (a.get('announcementTitle') or '').strip(),
+                    a.get('announcementTypeName') or '', url))
+    return out
+
+
+def cninfo_alive():
+    """巨潮是否可用（拿**茅台**当探针 —— 它必然有几千条公告）。
+
+    返回 `True` / `False`。
+
+    ★ 存在的意义：巨潮限流时返回 **HTTP 200 + 0 条**，与"这只票真的没有公告"
+      **完全同形**。不区分就会把"取数失败"当成"结论"（P85 一族）。
+      任何依赖 `announcements()` 的输出，都应先用本函数确认通道可用。
+    """
+    rows = announcements('600519', 3)
+    return len(rows) > 0
+
+
+def equity_struct(code):
+    """股本结构 → dict（**含公告日，天然 PIT**）；失败返回 `{}`。
+
+    src = `em/datacenter:RPT_F10_EH_EQUITY`。
+    关键字段：`listed`（流通 A 股）/ `total`（总股本）/ `free`（自由流通）/ `notice`（公告日）。
+
+    ⚠️ **换手率应当用它算**：`换手% = 成交量(股) / listed × 100` ——
+      比新浪资金流里那个「换手×100」字段**少一道单位换算**，可作**独立第二源交叉验证**。
+    """
+    rows = dce_get('RPT_F10_EH_EQUITY', pz=6, flt='(SECURITY_CODE="%s")' % code)
+    if not rows:
+        return {}
+    r = max(rows, key=lambda x: x.get('END_DATE') or '')
+    return {
+        'listed': r.get('LISTED_A_SHARES'), 'total': r.get('TOTAL_SHARES'),
+        'free': r.get('FREELIQCI_SHARES'), 'end': (r.get('END_DATE') or '')[:10],
+        'notice': (r.get('NOTICE_DATE') or '')[:10],
+        '_src': 'em/datacenter:RPT_F10_EH_EQUITY',
+    }
+
+
+def fin_statements(code):
+    """三大报表关键字段 → dict（缺项为 `None`，**绝不填 0**）；失败返回 `{}`。
+
+    src = `em/datacenter:RPT_DMSK_FN_*`。每张表**各有自己的 `NOTICE_DATE`** → 可做 PIT。
+    """
+    out = {}
+    b = dce_get('RPT_DMSK_FN_BALANCE', pz=4, flt='(SECURITY_CODE="%s")' % code)
+    if b:
+        r = max(b, key=lambda x: x.get('REPORT_DATE') or '')
+        out.update({'report': (r.get('REPORT_DATE') or '')[:10],
+                    'notice': (r.get('NOTICE_DATE') or '')[:10],
+                    'assets': r.get('TOTAL_ASSETS'), 'liab': r.get('TOTAL_LIABILITIES'),
+                    'equity': r.get('TOTAL_EQUITY'), 'debt_ratio': r.get('DEBT_ASSET_RATIO'),
+                    'current_ratio': r.get('CURRENT_RATIO'), 'inventory': r.get('INVENTORY'),
+                    'acct_rece': r.get('ACCOUNTS_RECE'), 'cash': r.get('MONETARYFUNDS'),
+                    'industry': r.get('INDUSTRY_NAME')})
+    i = dce_get('RPT_DMSK_FN_INCOME', pz=4, flt='(SECURITY_CODE="%s")' % code)
+    if i:
+        r = max(i, key=lambda x: x.get('REPORT_DATE') or '')
+        out['deduct_np'] = r.get('DEDUCT_PARENT_NETPROFIT')
+        out['income_report'] = (r.get('REPORT_DATE') or '')[:10]
+    c = dce_get('RPT_DMSK_FN_CASHFLOW', pz=4, flt='(SECURITY_CODE="%s")' % code)
+    if c:
+        r = max(c, key=lambda x: x.get('REPORT_DATE') or '')
+        out['ocf'] = r.get('NETCASH_OPERATE')
+        out['cash_report'] = (r.get('REPORT_DATE') or '')[:10]
+    if out:
+        out['_src'] = 'em/datacenter:RPT_DMSK_FN_*'
+    return out
+
+
+def turnover_rate(code, vol_shares, asof=None):
+    """**真实换手率（%）** = 成交量(手) × 100 ÷ 流通股本 × 100。
+
+    `vol_shares` 传**手**数（K 线的 `v` 字段单位）。`asof` 传日期时按 PIT 取当时可见股本。
+    取不到股本 → 返回 `None`（**不猜、不填 0**）。
+    """
+    st = equity_struct(code)
+    listed = st.get('listed')
+    if not listed or not vol_shares:
+        return None
+    return vol_shares * 100.0 / listed * 100.0
 
 
 if __name__ == '__main__':

@@ -209,6 +209,59 @@ def check_board_alignment(prof, tag='板块归属'):
 
 
 # ------------------------------------------------------------------ 汇总
+def check_ledger(tag='账本', cash=None):
+    """交易台账 ↔ 账户现金 的一致性自证。
+
+    ★ 2026-10-22 补：当天实测到「平仓后现金不回账」——
+      `journal._sync_account_from_trades()` 的 docstring 写着"把卖出净得加回现金"，
+      但代码只更新 `peak_equity`，`cash` 从未被改；`add_trade` 也不扣现金。
+      而 **selfcheck 当时完全没报**，因为它只查行情类恒等式。
+
+      → 账本错了不会让任何行情指标变形，却会让**可买股数 / 费用占比 / 仓位建议**
+        全部失真，且**很难自己发现**（现金少了一笔也不会报错）。
+
+    判据（三条，全部可从账本内部推出）：
+      ① `cash < 0`                          → FAIL（不可能为负）
+      ② 已平仓但未入账（有 `synced_trades`）   → WARN（钱可能没回账）
+      ③ `cash + 持仓成本 > 峰值 × 1.5`        → WARN（疑似重复入账）
+    """
+    out = []
+    try:
+        import journal as J
+        acc = J.account()
+        trades = J.list_trades()
+    except Exception as e:
+        return [(WARN, tag, '台账不可读：%s' % str(e)[:50])]
+
+    c = float(cash if cash is not None else (acc.get('cash') or 0.0))
+    peak = float(acc.get('peak_equity') or 0.0)
+    held = sum(float(t.get('buy_total') or 0) for t in trades if not t.get('sell_date'))
+
+    out.append((OK, tag + '·现金', '现金 %.2f ≥ 0' % c) if c >= 0 else
+               (FAIL, tag + '·现金', '现金 %.2f **为负** —— 账本已失真' % c))
+
+    done = [t for t in trades if t.get('sell_date')]
+    synced = set(acc.get('synced_trades') or [])
+    if done:
+        if not synced:
+            out.append((WARN, tag + '·入账',
+                        '有 %d 笔已平仓，但 `synced_trades` 为空 —— '
+                        '无法确认卖出净得是否已回到 cash' % len(done)))
+        else:
+            miss = [t['id'] for t in done if t['id'] not in synced]
+            out.append((OK, tag + '·入账', '%d/%d 笔已平仓已计入现金'
+                        % (len(done) - len(miss), len(done))) if not miss else
+                       (WARN, tag + '·入账', '%d 笔已平仓但**未入账**：%s'
+                        % (len(miss), ', '.join(miss[:3]))))
+
+    if peak > 0:
+        tot = c + held
+        out.append((OK, tag + '·量级', '现金+持仓 %.2f ≤ 峰值 %.2f×1.5' % (tot, peak)) if tot <= peak * 1.5 else
+                   (WARN, tag + '·量级', '现金+持仓 %.2f > 峰值 %.2f×1.5 → 疑似重复入账'
+                    % (tot, peak)))
+    return out
+
+
 def check_all(code, shares=500, snap=None, kline=None, ulist=None, fflow=None,
               prof=None, limit_pct=None):
     """跑全部自证断言。返回 {'code':…, 'fail':[...], 'warn':[...], 'pass':int, 'grade':str}"""
