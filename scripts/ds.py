@@ -673,6 +673,94 @@ def stock_flow_pool(pages=12, verbose=False):
     return _STOCK_FLOW_POOL
 
 
+def cashflow_attribution(code, periods=8):
+    """经营现金流归因 —— 把 OCF 拆开，并判断是「季节性」还是「真恶化」。
+
+    ★ 为什么必须做这个（2026-10-27 实测教训）：
+      单看「经营现金流为负」会得出**完全相反的结论**。
+      贸易/出口型企业普遍「上半年铺货、下半年回款」，
+      实测 002091：2025H1 **−2.15 亿**，但 2025Q3 就转 **+10.53 亿**、全年 **+23.45 亿**。
+      只看 H1 就说"现金流恶化"是错的 —— **必须同口径比去年同期 + 看全年节奏**。
+
+    ★ 归因口径（教科书式，可逐项核对）：
+        OCF ≈ 扣非净利 − 营运资本净占用 + 其他
+        营运资本净占用 = Δ应收账款 + Δ存货 − Δ应付账款
+      「其他」= OCF − 扣非 + 营运资本净占用（残差，含税费/其他应收/非付现调整）
+
+    ★ 三个必须同时看的健康判据：
+      ① **应付 > 应收** → 公司在无偿占用上游资金（贸易商议价能力的体现，偏正面）
+      ② **OCF 与上年同期同号且幅度接近** → 季节性，不是恶化
+      ③ **全年 OCF 是否为正** → 最终能不能收回来
+
+    返回 dict；取不到数据返回 {}。
+    """
+    def _load(rpt):
+        r = dce_get(rpt, pz=periods + 6, flt='(SECURITY_CODE="%s")' % code,
+                    sort='REPORT_DATE', stype=-1)
+        return {str(x.get('REPORT_DATE'))[:10]: x for x in (r or [])}
+    B = _load('RPT_DMSK_FN_BALANCE')
+    I = _load('RPT_DMSK_FN_INCOME')
+    C_ = _load('RPT_DMSK_FN_CASHFLOW')
+    if not (B and I and C_):
+        return {}
+    dates = sorted(set(C_) & set(B) & set(I), reverse=True)[:periods]
+    if not dates:
+        return {}
+
+    def _y(x, k):
+        v = x.get(k)
+        return (v / 1e8) if isinstance(v, (int, float)) else None
+
+    def _row(d):
+        b, i, c = B[d], I[d], C_[d]
+        return {'date': d,
+                'ocf': _y(c, 'NETCASH_OPERATE'),
+                'icf': _y(c, 'NETCASH_INVEST'),
+                'fcf': _y(c, 'NETCASH_FINANCE'),
+                'sales_cash': _y(c, 'SALES_SERVICES'),
+                'dnp': _y(i, 'DEDUCT_PARENT_NETPROFIT'),
+                'ar': _y(b, 'ACCOUNTS_RECE'),
+                'inv': _y(b, 'INVENTORY'),
+                'ap': _y(b, 'ACCOUNTS_PAYABLE')}
+    rows = [_row(d) for d in dates]
+
+    # 同期对比（最新一期 vs 上年同一报告期）
+    cur = rows[0]
+    yoy = None
+    if len(cur['date']) >= 10:
+        y, m, dd = cur['date'].split('-')
+        prev_key = '%d-%s-%s' % (int(y) - 1, m, dd)
+        prev = next((r for r in rows if r['date'] == prev_key), None)
+        if prev and cur['ocf'] is not None and prev['ocf'] is not None:
+            dar = (cur['ar'] - prev['ar']) if (cur['ar'] is not None and prev['ar'] is not None) else None
+            div = (cur['inv'] - prev['inv']) if (cur['inv'] is not None and prev['inv'] is not None) else None
+            dap = (cur['ap'] - prev['ap']) if (cur['ap'] is not None and prev['ap'] is not None) else None
+            wc = (dar + div - dap) if None not in (dar, div, dap) else None
+            yoy = {'prev_date': prev['date'], 'ocf_prev': prev['ocf'],
+                   'ocf_now': cur['ocf'], 'ocf_delta': cur['ocf'] - prev['ocf'],
+                   'd_ar': dar, 'd_inv': div, 'd_ap': dap, 'wc_drag': wc,
+                   'residual': (cur['ocf'] - (cur['dnp'] or 0) + (wc or 0))
+                               if cur['ocf'] is not None else None}
+
+    # 全年节奏（同一年内 Q1/H1/Q3/FY 的 OCF）
+    rhythm = {}
+    for r in rows:
+        rhythm[r['date']] = r['ocf']
+
+    judged = None
+    if yoy:
+        same_sign = (yoy['ocf_prev'] or 0) * (yoy['ocf_now'] or 0) > 0
+        near = abs(yoy['ocf_delta']) <= max(abs(yoy['ocf_prev'] or 0) * 0.5, 1.0)
+        if same_sign and near:
+            judged = 'seasonal'      # 与去年同季同号且幅度接近 → 季节性
+        elif same_sign:
+            judged = 'worse' if abs(yoy['ocf_now']) > abs(yoy['ocf_prev']) else 'better'
+        else:
+            judged = 'reversed'      # 符号反转，需要警惕
+    return {'rows': rows, 'yoy': yoy, 'rhythm': rhythm, 'judged': judged,
+            'ap_gt_ar': (cur['ap'] or 0) > (cur['ar'] or 0)}
+
+
 def sector_stats(bk, fallback=True, pre=False):
     """板块统计：家数/红盘数/主力合计/涨幅中位数/涨停名单/个股绝对排名。
     实现铁律 1（相对强度）+ 情绪温度。

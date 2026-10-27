@@ -1612,6 +1612,54 @@ def build(d, notes):
                cnt='红 = 净流入　绿 = 净流出　合计 %+.0f 万' % _ftot),
             badge=_badge, tone='warn' if _ftot < 0 else 'ok'))
 
+    # ★ 现金流质量 · 归因（2026-10-27 新增）
+    #   动机：单看「经营现金流为负」会得出完全相反的结论 —— 贸易/出口型企业
+    #   「上半年铺货、下半年回款」，实测 002091 2025H1 −2.15 亿、全年 +23.45 亿。
+    #   所以这里必须**给出同期对比 + 营运资本拆解 + 季节性判定**，而不是只给一个负数。
+    try:
+        _cfa = ds.cashflow_attribution(d.get('code') or '')
+    except Exception:
+        _cfa = {}
+    if _cfa:
+        _r6 = _cfa['rows'][:6]
+        _t = ('<table><tr><th>报告期</th><th>经营</th><th>投资</th><th>筹资</th>'
+              '<th>扣非</th><th>应收账款</th></tr>')
+
+        def _cf(v):
+            return ("<td class='num %s'>%+.2f</td>" % (cls(v), v)) if isinstance(v, (int, float)) else "<td class='num'>—</td>"
+        for _x in _r6:
+            _t += ("<tr><td>%s</td>" % _x['date'][:7] + _cf(_x['ocf']) + _cf(_x['icf'])
+                   + _cf(_x['fcf']) + _cf(_x['dnp'])
+                   + ("<td class='num'>%.1f 亿</td>" % _x['ar'] if isinstance(_x['ar'], (int, float)) else "<td class='num'>—</td>")
+                   + "</tr>")
+        _t += '</table><p class="tiny">单位：亿元。经营/投资/筹资 = 现金流量表三大净额；扣非 = 扣非归母净利。</p>'
+
+        _y = _cfa.get('yoy')
+        if _y:
+            _judge = {'seasonal': '🟢 <b>季节性</b>（与上年同季同号且幅度接近）',
+                      'better': '🟢 <b>同比改善</b>',
+                      'worse': '🔴 <b>同比恶化</b>',
+                      'reversed': '🔴 <b>符号反转</b>（去年同季为正、今年为负，需警惕）'
+                      }.get(_cfa.get('judged'), '—')
+            _t += ('<p><b>同期对比</b>（%s vs %s）：经营现金流 <b>%+.2f → %+.2f 亿</b>（差 %+.2f）</p>'
+                   '<p><b>营运资本拆解</b>：Δ应收账款 <b>%+.2f</b> ＋ Δ存货 <b>%+.2f</b> − Δ应付账款 <b>%+.2f</b>'
+                   ' ＝ <b>净占用 %+.2f 亿</b>；残差（税费/其他/非付现）<b>%+.2f 亿</b>。</p>'
+                   '<p><b>判定</b>：%s</p>'
+                   % (_cfa['rows'][0]['date'][:10], _y['prev_date'][:10],
+                      _y['ocf_prev'], _y['ocf_now'], _y['ocf_delta'],
+                      _y['d_ar'] or 0, _y['d_inv'] or 0, _y['d_ap'] or 0,
+                      _y['wc_drag'] or 0, _y['residual'] or 0, _judge))
+        _t += ('<p class="tiny">%s</p>'
+               % ('✅ <b>应付账款 > 应收账款</b> —— 公司在无偿占用上游资金，是贸易商议价能力的体现（偏正面）。'
+                  if _cfa.get('ap_gt_ar') else
+                  '⚠️ <b>应收账款 > 应付账款</b> —— 公司在为下游垫资，需关注回款风险。'))
+        _t += ('<p class="tiny">⚠️ <b>读法</b>：<b>「经营现金流为负」本身不是结论</b>。'
+               '必须同时看三件事：① 与上年同季是否同号同幅度（季节性）② 应付是否大于应收（议价能力）'
+               '③ 全年 OCF 是否转正（最终能否收回）。只看单期负数会得出相反判断。</p>')
+        A(C('现金流质量 · 归因', _t,
+            badge='同期对比 · 非单期绝对值',
+            tone='ok' if _cfa.get('judged') in ('seasonal', 'better') else 'warn'))
+
     A(C('三、多空研判', body, tone='warn' if len(nb) > len(pb) else 'ok'))
 
     # ===== 四、技术分析 =====

@@ -103,7 +103,13 @@ def check_snapshot(s, limit_pct=None):
 def check_flow_seq(ff, tag='fflow'):
     """资金流时间序列恒等式：主力 == 大单 + 超大单；主力 + 中单 + 小单 == 0。"""
     if not ff:
-        return [(WARN, tag, '无数据')]
+        # ★ 2026-10-27 改：旧文案只写「无数据」，读者会以为**报告缺数据**，
+        #   但实际是 `ds.fflow`（东财 push2）**瞬时抖动**，
+        #   而 `flow_days_any()` 有降级链（→ 新浪 MoneyFlow），**资金面并不缺**。
+        #   实测：13:16 生成报告时 fflow 空，13:31 再查就有 152 行 —— 纯瞬时故障。
+        return [(WARN, tag,
+                 'fflow(push2) 本次取不到 —— 若报告资金面正常，说明已自动降级（新浪）；'
+                 '若资金面也空，才是真的缺数据。push2 抖动通常几秒~几分钟自愈，可重跑')]
     out = []
     t, zl, sm, mid, big, xl = ff[-1]
     ok = abs(zl - (big + xl)) <= max(abs(zl) * 0.02, 1.0)
@@ -204,7 +210,9 @@ def check_board_alignment(prof, tag='板块归属'):
     cs = prof.get('concepts') or []
     miss = [c for c in cs if c not in idx]
     out.append((OK, tag, '全部 %d 个概念命中板块索引' % len(cs)) if not miss else
-               (WARN, tag, '%d/%d 个概念未命中：%s' % (len(miss), len(cs), '、'.join(miss[:5]))))
+               (WARN, tag, '%d/%d 个概念未命中（%s）—— 常见原因：push2 不可用时降级到 '
+                'datacenter「核心题材」体系，两套板块命名本就不同（P83），**不一定是数据缺失**'
+                % (len(miss), len(cs), '、'.join(miss[:5]))))
     return out
 
 
