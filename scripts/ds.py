@@ -459,6 +459,8 @@ def stock_profile(code):
 
 
 _BOARD_IDX = {}
+_BOARD_IDX_TS = 0.0
+_BOARD_IDX_SOFT = False
 
 
 def main_business(code, n=6):
@@ -507,13 +509,15 @@ def main_business(code, n=6):
 
 
 def board_index(refresh=False):
+    global _BOARD_IDX_TS, _BOARD_IDX_SOFT
     """全市场板块索引：行业(m:90+t:2) + 概念(m:90+t:3)，进程内缓存。
 
     返回 {'by_name': {名称: (bk, kind, zl亿, chg%)}, 'by_bk': {bk: (名称, kind, zl亿, chg%)}}
       kind ∈ {'行业','概念'}；zl/chg 可能为 None（盘前或该字段限流），
       **但名称与代码始终有效** —— 盘前也要能解析出板块，只是不参与资金打分。
     """
-    if _BOARD_IDX and not refresh:
+    # ★ TTL：完整缓存永久有效；软缓存（有残页）只保留 60 秒
+    if _BOARD_IDX and not refresh and (not _BOARD_IDX_SOFT or (time.time() - _BOARD_IDX_TS) < 60):
         return _BOARD_IDX
     by_name, by_bk = {}, {}
     meta = {'pages_ok': 0, 'pages_failed': 0, 'truncated': [], 'blocked': False}
@@ -587,14 +591,27 @@ def board_index(refresh=False):
     #   后续所有查询都被它污染 —— **且不报任何错**。
     #   宁可下次重算（有熔断器兜底），也不拿一份有洞的索引当权威。
     if meta['truncated'] or meta['blocked']:
-        meta['cached'] = False
-        meta['warn'] = ('索引存在残页（%s）→ 本次**不写入缓存**，下次调用会重算；'
+        # ★ 2026-10-27 改：残页时**仍写软缓存（TTL 60 秒）**。
+        #   原实现"有残页就不缓存" → 同一份报告里 board_index 被调用 10+ 次，
+        #   每次都重算 24.7 秒（实测整篇报告 389 秒，其中一半耗在这里）。
+        #   但**不能**把它当权威：用 `meta['soft']=True` 标出来，
+        #   且 60 秒后自动失效（下次调用会重算），兼顾"不污染"与"不重复"。
+        meta['cached'] = 'soft'
+        meta['soft'] = True
+        meta['warn'] = ('索引存在残页（%s）→ 本次写入**软缓存(TTL 60s)**，'
                         '调用方不得把"名字查不到"当成"该板块不存在"'
                         % '、'.join(meta['truncated'][:6]))
-        return {'by_name': by_name, 'by_bk': by_bk, 'meta': meta}
+        _BOARD_IDX.clear()
+        _BOARD_IDX.update({'by_name': by_name, 'by_bk': by_bk, 'meta': meta})
+        _BOARD_IDX_TS = time.time()
+        _BOARD_IDX_SOFT = True
+        return _BOARD_IDX
     meta['cached'] = True
+    meta['soft'] = False
     _BOARD_IDX.clear()
     _BOARD_IDX.update({'by_name': by_name, 'by_bk': by_bk, 'meta': meta})
+    _BOARD_IDX_TS = time.time()
+    _BOARD_IDX_SOFT = False
     return _BOARD_IDX
 
 
