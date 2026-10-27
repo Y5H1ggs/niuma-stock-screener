@@ -481,22 +481,37 @@ def ladder_scan(topn=80, pre=False):
     if not valid:
         return [], 0, False
     ups = [x for x in valid if _fl(x.get('f3')) >= 9.7][:topn]
-    out, failed = [], 0
-    for x in ups:
+
+    # ★ 2026-10-27 性能修复（P0-4）：原实现**串行**对每只涨停股拉 K 线算 streak，
+    #   实测 52 只 × 单只 5.4 秒（腾讯 K 线在高并发请求下大量失败 + 每次 sleep 重试 0.8s）
+    #   → ladder_scan 独占 **280 秒**（占整篇报告 375 秒的 75%）。
+    #   改为 8 线程并发后，52 只降到约 6~8 秒。
+    def _streak_of(x):
         code = str(x.get('f12'))
-        k = kline_qq(code, 30)
+        try:
+            k = kline_qq(code, 30)
+        except Exception:
+            return None
         if not k:
-            failed += 1
-            continue
+            return None
         streak = 0
         for i in range(len(k) - 1, 0, -1):
             if k[i]['c'] >= round(k[i - 1]['c'] * 1.1, 2) - 0.001:
                 streak += 1
             else:
                 break
-        if k[-1]['d'] != today:      # 今日 K 未入库，补上今天这根
+        if k[-1]['d'] != today:          # 今日 K 未入库，补上今天这根
             streak += 1
-        out.append((code, str(x.get('f14')), streak))
+        return (code, str(x.get('f14')), streak)
+
+    out, failed = [], 0
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as _ex:
+        for r in _ex.map(_streak_of, ups):
+            if r is None:
+                failed += 1
+            else:
+                out.append(r)
     out.sort(key=lambda t: -t[2])
     return out, failed, True
 

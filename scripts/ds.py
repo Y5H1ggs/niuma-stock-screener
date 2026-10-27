@@ -205,9 +205,35 @@ def snapshot(codes, raw=False):
 
 
 # ---------------------------------------------------------------- 2. 全市场列表（东财 clist）
-def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8,f10,f20,f62,f100'):
+_CLIST_CACHE = {}
+_CLIST_DOWN_UNTIL = 0.0   # 全局熔断：接口整体不可用时，30 秒内直接返回空
+
+
+def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8,f10,f20,f62,f100',
+          ttl=30):
     """全市场/板块成分列表。fid=f3 涨幅降序，fid=f62 主力净额降序。
-    ⚠️ pz 最大 100（设 2000 不生效）。自动分页。"""
+    ⚠️ pz 最大 100（设 2000 不生效）。自动分页。
+
+    ★ 2026-10-27 加进程内缓存（TTL 30 秒）：同一份报告里 clist 会被调用多次
+      （ladder_scan / 板块对比 / 选股），接口不可用时**每次都要重试 3 页约 14 秒**，
+      不缓存会把报告从 87 秒拖回 150 秒以上。失败结果也缓存（避免反复失败）。
+    """
+    global _CLIST_DOWN_UNTIL
+    # ★ 全局熔断：若 30 秒内已确认 clist 整体不可用，直接返回空，
+    #   避免每份报告里 N 次不同参数的调用各重试 3 页（实测累计 40+ 秒）。
+    if time.time() < _CLIST_DOWN_UNTIL:
+        _CLIST_META.clear()
+        _CLIST_META.update({'fid': fid, 'fs': fs, 'pages_ok': 0, 'pages_failed': 1,
+                            'total': None, 'truncated': True, 'blocked_all': True,
+                            'rows': 0, 'uniq': 0, 'complete': False,
+                            'at': time.strftime('%H:%M:%S')})
+        return []
+    _key = (fid, fs, pages, pz, fields)
+    _hit = _CLIST_CACHE.get(_key)
+    if _hit and (time.time() - _hit[0]) < ttl:
+        _CLIST_META.clear()
+        _CLIST_META.update(_hit[1])
+        return list(_hit[2])
     rows = []
     _m = {'fid': fid, 'fs': fs, 'pages_ok': 0, 'pages_failed': 0, 'total': None,
           'truncated': False, 'at': time.strftime('%H:%M:%S')}
@@ -215,16 +241,30 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
         url = (f'https://{EM_HOSTS[0]}/api/qt/clist/get?pn={pn}&pz={pz}&po=1&np=1&fltt=2&invt=2'
                f'&fid={fid}&fs={fs}&fields={fields}&ut={UT}')
         r = get(url)
+        # ★ 2026-10-27 根治（P0-1）：原实现"一页失败就 break" → 只拿到第 1~N 页，
+        #   后续全部丢弃（实测常见 1920/5563、1080/5563）。现改为：
+        #   ① 换遍所有主机重试该页（每主机 1 次）
+        #   ② 仍失败 → **跳过该页继续下一页**（而不是 break）
+        #   ③ 记进 `failed_pages`，`truncated` 仍为 True（有空洞，不能当全量）
         if not r:
-            # 换主机重试一次
-            r = get(url.replace(EM_HOSTS[0], EM_HOSTS[1]))
+            for _h in EM_HOSTS[:3]:
+                if _h == EM_HOSTS[0]:
+                    continue
+                r = get(url.replace(EM_HOSTS[0], _h), tries=1)
+                if r:
+                    break
+                time.sleep(0.3)
         if not r:
-            # ⚠️ **这里只 break，不报错** —— 调用方拿到的是"少了几页"的列表，
-            #   和"全市场只有这么多"**长得一模一样**（P72/P79 同族：截断被伪装成"就这么多"）。
-            #   不改返回类型（会破坏全部调用方），改为把事实记进 `clist_meta()`。
             _m['pages_failed'] += 1
             _m['truncated'] = True
-            break
+            _m.setdefault('failed_pages', []).append(pn)
+            # ★ 快速失败：**一页都没成功且已连败 3 页** → 说明接口整体不可用，
+            #   继续重试只会把 5 秒拖成 48 秒（实测）。此处直接退出。
+            if _m['pages_ok'] == 0 and _m['pages_failed'] >= 3:
+                _m['blocked_all'] = True
+                _CLIST_DOWN_UNTIL = time.time() + 30   # 30 秒内不再尝试
+                break
+            continue
         try:
             j = json.loads(r)
             diff = (j.get('data') or {}).get('diff') or []
@@ -273,6 +313,11 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
         seen.add(k)
         uniq.append(x)
     _m['uniq'] = len(uniq)
+    _CLIST_CACHE[_key] = (time.time(), dict(_m), list(uniq))
+    # 缓存最多留 8 份，防止长期驻留内存
+    if len(_CLIST_CACHE) > 8:
+        for _k in sorted(_CLIST_CACHE, key=lambda k: _CLIST_CACHE[k][0])[:len(_CLIST_CACHE) - 8]:
+            _CLIST_CACHE.pop(_k, None)
     return uniq
 
 
