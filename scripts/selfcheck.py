@@ -209,10 +209,21 @@ def check_board_alignment(prof, tag='板块归属'):
                    (WARN, tag, '行业候选「%s」全部未命中板块索引（口径可能变更）' % '/'.join(inds)))
     cs = prof.get('concepts') or []
     miss = [c for c in cs if c not in idx]
-    out.append((OK, tag, '全部 %d 个概念命中板块索引' % len(cs)) if not miss else
-               (WARN, tag, '%d/%d 个概念未命中（%s）—— 常见原因：push2 不可用时降级到 '
-                'datacenter「核心题材」体系，两套板块命名本就不同（P83），**不一定是数据缺失**'
-                % (len(miss), len(cs), '、'.join(miss[:5]))))
+    # ★ 2026-10-27 改：**概念未命中属于常态，不该进「自证校验提示」**。
+    #   原因：`board_index()` 是东财**行情板块**体系，而 `stock_profile()` 的概念
+    #   在 push2 与 datacenter「核心题材」之间会切换，两套命名本就不一致（P83）。
+    #   实测 002091：13 个概念里有 3 个（参股保险/超级电容/一带一路）不在行情板块索引里 ——
+    #   这是**正常现象**，报 WARN 会让使用者以为数据坏了。
+    #   → 只有**大面积未命中（≥50%）**才值得提醒（那才是体系切换或索引过期的信号）。
+    if not cs:
+        out.append((OK, tag, '无概念字段（不影响结论）'))
+    elif len(miss) <= len(cs) * 0.5:
+        out.append((OK, tag, '概念命中 %d/%d（%d 个未在行情板块索引，属命名体系差异，非缺失）'
+                    % (len(cs) - len(miss), len(cs), len(miss))))
+    else:
+        out.append((WARN, tag, '概念仅命中 %d/%d（未命中 ≥50%%，可能板块体系切换或索引过期；'
+                    '不代表数据缺失，但行业基准可能取错）'
+                    % (len(cs) - len(miss), len(cs))))
     return out
 
 
