@@ -139,11 +139,19 @@ def snapshot(code, days=250):
         vv = [x for x in vals if isinstance(x, (int, float))]
         if not vv:
             continue
-        pctile = sum(1 for x in vv if x <= v) / len(vv) * 100.0
+        # ★ v1.2.30：**按因子类型分支，二值/离散不算分位**
+        #   2026-10-27 实测：`new_high60` 在 250 天里唯一值只有 0（从未创新高），
+        #   却算出「分位 99%」—— 二值/单值变量的分位**没有意义**，
+        #   读者会误读成"99% 的历史样本都比它低"，进而以为这是强信号。
+        uniq = sorted({round(x, 6) for x in vv})
+        nu = len(uniq)
+        kind = 'bin' if nu <= 2 else ('disc' if nu <= 8 else 'cont')
+        pctile = (sum(1 for x in vv if x <= v) / len(vv) * 100.0) if kind == 'cont' else None
         ic = IC_TABLE.get(nm, {})
         items.append({
             'name': nm, 'label': label, 'value': v, 'unit': unit,
-            'pctile': pctile, 'n': len(vv),
+            'pctile': pctile, 'n': len(vv), 'kind': kind,
+            'uniq_n': nu, 'uniq': uniq if kind != 'cont' else None,
             'ic': ic.get('ic'), 't': ic.get('t'), 'cat': ic.get('cat', '—'),
         })
     return {'code': code, 'date': k[last]['d'], 'close': k[last]['c'],
@@ -188,6 +196,9 @@ def interpret(s):
     out = []
     for gname, names in _GROUPS:
         got = [by[n] for n in names if n in by]
+        if not got:
+            continue
+        got = [it for it in got if it.get('pctile') is not None]   # ★ 跳过二值/离散
         if not got:
             continue
         ps = [it['pctile'] for it in got]
@@ -245,11 +256,28 @@ def html_table(s):
     for it in s['items']:
         val = _f(it['value'], it['unit'])
         p = it['pctile']
-        # 分位越高给越暖的色（红涨绿跌语境下，用"偏离中位"的中性色，不做多空暗示）
-        bar = ('<span style="display:inline-block;height:6px;width:%.0fpx;'
-               'background:#A9843F;opacity:.55;vertical-align:middle"></span>'
-               '<span style="display:inline-block;height:6px;width:%.0fpx;'
-               'background:#c8ccd4;vertical-align:middle"></span>' % (p * 0.6, (100 - p) * 0.6))
+        _kd = it.get('kind', 'cont')
+        if _kd == 'bin':
+            # ★ 二值因子：显示"是/否"，不算分位（分位对 0/1 变量无意义）
+            _vv = it.get('value')
+            head = '是' if _vv else '否'
+            cell = ('<span style="color:#6b7280">二值 · %s</span>' % head)
+        elif _kd == 'disc':
+            cell = ('<span style="color:#6b7280">离散 · %d 档</span>' % (it.get('uniq_n') or 0))
+        else:
+            if p >= 95:
+                cell = '%.0f%% <span style="color:#c0392b">◆极值高</span>' % p
+            elif p <= 5:
+                cell = '%.0f%% <span style="color:#1e7a46">◆极值低</span>' % p
+            else:
+                cell = '%.0f%%' % p
+        if p is None:
+            bar = '<span style="color:#a9b2be;font-size:11px">不分位</span>'
+        else:
+            bar = ('<span style="display:inline-block;height:6px;width:%.0fpx;'
+                   'background:#A9843F;opacity:.55;vertical-align:middle"></span>'
+                   '<span style="display:inline-block;height:6px;width:%.0fpx;'
+                   'background:#c8ccd4;vertical-align:middle"></span>' % (p * 0.6, (100 - p) * 0.6))
         if it['ic'] is None:
             eff = '<span style="color:#8a8f98">未收录</span>'
         else:
@@ -257,8 +285,8 @@ def html_table(s):
             eff = ('<span style="color:%s;font-weight:600">IC %+.4f</span>'
                    ' <span style="color:#8a8f98">t=%+.2f</span>' % (tone, it['ic'], it['t']))
         rows.append('<tr><td><b>%s</b></td><td>%s</td><td>%s</td>'
-                    '<td>%.0f%%<br>%s</td><td>%s</td></tr>'
-                    % (it['label'], it['cat'], val, p, bar, eff))
+                    '<td>%s<br>%s</td><td>%s</td></tr>'
+                    % (it['label'], it['cat'], val, cell, bar, eff))
     html = [head, '<table><tr><th>因子</th><th>类别</th><th>当前值</th>'
             '<th>自身历史分位</th><th>市场有效性（已过校正）</th></tr>']
     html += rows
@@ -284,7 +312,9 @@ def text_report(code):
     for it in s['items']:
         val = _f(it['value'], it['unit'])
         ic = ('IC%+.4f t=%+.2f' % (it['ic'], it['t'])) if it['ic'] is not None else '未收录'
-        L.append('  %-14s %-12s %10s %9.0f%%   %s' % (it['label'], it['cat'], val, it['pctile'], ic))
+        _pp = it.get('pctile')
+        L.append('  %-14s %-12s %10s %9s   %s' % (it['label'], it['cat'], val,
+                 ('%.0f%%' % _pp) if _pp is not None else '—(不分位)', ic))
     L.append('')
     L.append('  ⚠️ 「自身分位」= 该股近 %d 日**自身历史**分位，**不是全市场横截面分位**（P84）。' % s['days'])
     L.append('  ⚠️ IC 为**横截面**统计（同一天里谁比谁强），单票上仅表示"处于自身历史的什么位置"，')

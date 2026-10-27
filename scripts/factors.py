@@ -547,7 +547,7 @@ def daily_factors(k, i, fin, last_fin=None, fl=None, ix=None):
         'mom20': (c / cl[-21] - 1) * 100 if len(cl) > 21 else 0,
         'devma5': (c / ma5 - 1) * 100 if ma5 else 0,
         'devma20': (c / ma20 - 1) * 100 if ma20 else 0,
-        'above20': c > ma20, 'bull': ma5 > ma10 > ma20 > ma60,
+        'above20': 1.0 if c > ma20 else 0.0, 'bull': 1.0 if ma5 > ma10 > ma20 > ma60 else 0.0,
         'rsi14': ds.rsi(cl, 14), 'cci20': ds.cci(hi, lo, cl, 20),
         'wr14': ds.wr(hi, lo, cl, 14), 'pctb': b['pctb'],
         # ⚠️ P84：pos60 / pos250 在历史不足时返回 None（不再用缩窗口的数字冒充）。
@@ -572,7 +572,7 @@ def daily_factors(k, i, fin, last_fin=None, fl=None, ix=None):
         'upper': (h - max(o, c)) / c * 100 if c else 0,
         'lower': (min(o, c) - l) / c * 100 if c else 0,
         'gap': (o / prev - 1) * 100 if prev else 0,
-        'yang': c > o, 'body': (c - o) / o * 100 if o else 0,
+        'yang': 1.0 if c > o else 0.0, 'body': (c - o) / o * 100 if o else 0,
         'streak': st, 'atr14': atr14, 'vol20': vol20,
         # ---- v1.2.16 新增（量价 / 波动 / 趋势 / 资金 / 日内 / 形态）----
         'vp_corr': vp_corr, 'obv_slope': obv_slope, 'mfi14': mfi14,
