@@ -673,6 +673,168 @@ def stock_flow_pool(pages=12, verbose=False):
     return _STOCK_FLOW_POOL
 
 
+def chip_distribution(code, days=180, nbins=40):
+    """成本（筹码）分布估算 —— **换手衰减模型**，不是简单成交量堆积。
+
+    ★ 算法：逐日把已有筹码按当日换手率衰减，新成交按当日 [low,high] 均匀分布。
+        筹码(今日) = 筹码(昨日) × (1 − 换手率) + 今日成交量按价格分布
+      → 这样"很久以前的高位筹码"会随时间被稀释，比"成交量直接累加"更接近真实。
+    ⚠️ **这是估算，不是真实筹码数据**：真实筹码分布需 L2 逐笔成交 + 股东名册，
+       免费源拿不到。本函数只能回答"哪个价位区间成交最密集"。
+
+    ⚠️ **"万手哥/主力席位"同样拿不到** —— 需 L2 逐笔与龙虎榜席位数据（付费）。
+       本函数**不能**区分"谁在买"，只能给出"筹码堆在哪个价位"。
+
+    返回 dict：{bins:[(价格, 万股, 占比)], peak:[(价,占比)...], price_range, current}
+    """
+    k = kline_list(code, days + 12)
+    if not k or len(k) < 60:
+        return {}
+    eq = {}
+    try:
+        eq = equity_struct(code)
+    except Exception:
+        eq = {}
+    listed = eq.get('listed') or 0
+    if not listed:
+        return {}
+    k = k[-days:]
+    lo = min(x['l'] for x in k)
+    hi = max(x['h'] for x in k)
+    if hi <= lo:
+        return {}
+    step = max(0.01, round((hi - lo) / nbins, 2))
+    prices = [round(lo + i * step, 2) for i in range(int((hi - lo) / step) + 2)]
+    bins = {p: 0.0 for p in prices}
+    for x in k:
+        vol = x['v'] or 0                      # 手
+        turn = (vol * 100.0) / listed          # 换手率（小数）
+        turn = min(max(turn, 0.0), 0.5)        # 截断异常值
+        for p in bins:
+            bins[p] *= (1 - turn)
+        pl, ph = x['l'], x['h']
+        keys = [p for p in bins if pl <= p <= ph]
+        if not keys:
+            keys = [min(bins, key=lambda p: abs(p - (pl + ph) / 2))]
+        per = vol / len(keys)
+        for p in keys:
+            bins[p] += per * 100 / 1e4         # 折成万股
+    tot = sum(bins.values()) or 1
+    arr = [(p, v, v / tot * 100) for p, v in sorted(bins.items(), reverse=True)]
+    # 密集区：占比 > 3% 的连续块
+    peaks = [(p, pct) for p, v, pct in arr if pct >= 3.0]
+    cur = snapshot([code]).get(code, {}).get('price') or k[-1]['c']
+    return {'bins': arr, 'peaks': peaks, 'price_range': (lo, hi),
+            'current': cur, 'steps': step,
+            'above': sum(pct for p, v, pct in arr if p > cur),
+            'below': sum(pct for p, v, pct in arr if p <= cur)}
+
+
+def shareholder_profile(code):
+    """股东结构：户数变化（筹码集中度）+ 十大流通股东（含送转除权识别）。
+
+    ⚠️ **送转陷阱**：若多个股东的环比变动是**同一个数字**（如都用 −26.1%），
+       那不是减持，是**送股/转增导致的除权**。本函数会检测并标注。
+    """
+    out = {'holders': [], 'top10': [], 'transfer_note': None}
+    r = dce_get('RPT_F10_EH_HOLDERNUM', pz=10, flt='(SECURITY_CODE="%s")' % code,
+                sort='END_DATE', stype=-1)
+    for x in (r or [])[:6]:
+        out['holders'].append({'date': str(x.get('END_DATE'))[:10],
+                               'num': x.get('HOLDER_TOTAL_NUM'),
+                               'ratio': x.get('TOTAL_NUM_RATIO')})
+    r2 = dce_get('RPT_F10_EH_FREEHOLDERS', pz=24, flt='(SECURITY_CODE="%s")' % code,
+                 sort='END_DATE', stype=-1)
+    if r2:
+        latest = str(r2[0].get('END_DATE'))[:10]
+        rows = [x for x in r2 if str(x.get('END_DATE'))[:10] == latest]
+        rows.sort(key=lambda x: _fl(x.get('HOLDER_RANK'), 99))
+        from collections import Counter
+        qoqs = [round(_fl(x.get('FREE_RATIO_QOQ'), 0) * 100, 1) for x in rows[:10]
+                if x.get('FREE_RATIO_QOQ') is not None]
+        cnt = Counter(qoqs)
+        same, n_same = (cnt.most_common(1)[0] if cnt else (None, 0))
+        if n_same >= 3 and same is not None:
+            out['transfer_note'] = ('%d 个股东的环比变动同为 %+.1f%% → '
+                                    '判定为**送股/转增除权**，不是减持（勿误读）' % (n_same, same))
+        for x in rows[:10]:
+            out['top10'].append({
+                'rank': int(_fl(x.get('HOLDER_RANK'), 0)),
+                'name': str(x.get('HOLDER_NAME') or '')[:30],
+                'hold_wan': _fl(x.get('HOLD_NUM')) / 1e4,
+                'pct': _fl(x.get('FREE_HOLDNUM_RATIO')),
+                'qoq': (_fl(x.get('FREE_RATIO_QOQ')) * 100) if x.get('FREE_RATIO_QOQ') is not None else None,
+            })
+        out['latest'] = latest
+    return out
+
+
+def business_profile(code, periods=6):
+    """公司经营画像：**落到业务数据**（主营构成 / 上下游周转 / 费用结构 / 行业占比）。
+
+    ★ 存在的意义：只给"营收 198 亿、净利 4.7 亿"这种数字，读者无法判断这家公司
+      **靠什么赚钱、赚得难不难、在产业链里有没有话语权**。
+      本函数用四个业务口径回答这四件事：
+        ① 靠什么赚钱 → 分产品/分地区营收构成
+        ② 赚得难不难 → 毛利率 + 三费占比 + 净利率
+        ③ 有没有话语权 → **应付天数 vs 应收天数**（谁在被谁占款）
+        ④ 在行业里多大 → 营收 / 同业合计
+
+    ★ 上下游印证的核心指标：**现金转换周期 CCC = 应收天数 + 存货天数 − 应付天数**
+      · CCC < 0：**用上游的钱做生意**（最强）
+      · CCC 0~30 天：效率良好
+      · CCC > 60 天：自己垫资重，资金链压力大
+      半年报口径按 ×180 / 营收（或成本）折算天数。
+
+    返回 dict；取不到返回 {}。
+    """
+    def _load(rpt):
+        r = dce_get(rpt, pz=periods + 4, flt='(SECURITY_CODE="%s")' % code,
+                    sort='REPORT_DATE', stype=-1)
+        return {str(x.get('REPORT_DATE'))[:10]: x for x in (r or [])}
+    B = _load('RPT_DMSK_FN_BALANCE')
+    I = _load('RPT_DMSK_FN_INCOME')
+    if not (B and I):
+        return {}
+    dates = sorted(set(B) & set(I), reverse=True)[:periods]
+    if not dates:
+        return {}
+
+    def _v(d, src, k, scale=1e8):
+        v = src[d].get(k)
+        return (v / scale) if isinstance(v, (int, float)) else None
+
+    rows = []
+    for d in dates:
+        rev = _v(d, I, 'TOTAL_OPERATE_INCOME')
+        cost = _v(d, I, 'OPERATE_COST')
+        ar = _v(d, B, 'ACCOUNTS_RECE')
+        iv = _v(d, B, 'INVENTORY')
+        ap = _v(d, B, 'ACCOUNTS_PAYABLE')
+        dn = _v(d, I, 'DEDUCT_PARENT_NETPROFIT')
+        days = 180 if d.endswith('06-30') else (90 if d.endswith('03-31') or d.endswith('09-30') else 360)
+        ar_d = (ar / rev * days) if (ar is not None and rev) else None
+        iv_d = (iv / cost * days) if (iv is not None and cost) else None
+        ap_d = (ap / cost * days) if (ap is not None and cost) else None
+        ccc = (ar_d + iv_d - ap_d) if None not in (ar_d, iv_d, ap_d) else None
+        gp = (rev - cost) if (rev is not None and cost is not None) else None
+        rows.append({
+            'date': d, 'rev': rev, 'cost': cost, 'ar': ar, 'inv': iv, 'ap': ap, 'dnp': dn,
+            'ar_days': ar_d, 'inv_days': iv_d, 'ap_days': ap_d, 'ccc': ccc,
+            'gross_margin': (gp / rev * 100) if (gp is not None and rev) else None,
+            'net_margin': (dn / rev * 100) if (dn is not None and rev) else None,
+            'exp': {k: (_v(d, I, k) / rev * 100) if (_v(d, I, k) is not None and rev) else None
+                    for k in ('SALE_EXPENSE', 'MANAGE_EXPENSE', 'FINANCE_EXPENSE')},
+        })
+
+    mb = {}
+    try:
+        mb = main_business(code) or {}
+    except Exception:
+        mb = {}
+    return {'rows': rows, 'main': mb, 'code': code}
+
+
 def cashflow_attribution(code, periods=8):
     """经营现金流归因 —— 把 OCF 拆开，并判断是「季节性」还是「真恶化」。
 

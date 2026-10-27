@@ -1612,6 +1612,113 @@ def build(d, notes):
                cnt='红 = 净流入　绿 = 净流出　合计 %+.0f 万' % _ftot),
             badge=_badge, tone='warn' if _ftot < 0 else 'ok'))
 
+    # ★ 筹码结构（2026-10-27 新增）：成本分布峰值 + 上方套牢盘 + 股东户数 + 十大流通股东
+    try:
+        _chip = ds.chip_distribution(d.get('code') or '')
+        _sh = ds.shareholder_profile(d.get('code') or '')
+    except Exception:
+        _chip, _sh = {}, {}
+    if _chip or _sh:
+        _t = ''
+        if _chip:
+            _t += ('<p><b>成本分布（换手衰减模型，近 180 日）</b> —— 现价 <b>%.2f</b>，'
+                   '<b>上方筹码 %.1f%%</b>、下方 %.1f%%</p>' % (_chip['current'], _chip['above'], _chip['below']))
+            if _chip['above'] > 70:
+                _t += ('<p>⚠️ <b>上方套牢盘极重（%.0f%%）</b> —— 每上涨一段都会遇到解套抛压，'
+                       '这是"涨不动"的结构性原因（不是"没资金"那么简单）。</p>' % _chip['above'])
+            _t += '<p class="tiny">密集区（占比 ≥3%）：' + '　'.join(
+                '%.2f <b>%.1f%%</b>' % (p, pct) for p, pct in _chip['peaks'][:8]) + '</p>'
+            _t += ('<p class="tiny">⚠️ <b>这是估算，不是真实筹码数据</b>：真实筹码分布需 L2 逐笔成交 + 股东名册，'
+                   '免费源拿不到；<b>"万手哥/主力席位"同样拿不到</b>。本表只回答"成交堆在哪个价位"。</p>')
+
+        if _sh.get('holders'):
+            _t += '<p><b>股东户数</b>（户数减少 = 筹码集中，散户离场）</p>'
+            _t += '<table><tr><th>报告期</th><th>股东户数</th><th>环比</th></tr>'
+            for h in _sh['holders']:
+                _rr = h.get('ratio')
+                _t += ('<tr><td>%s</td><td class="num">%s</td><td class="num">%s</td></tr>'
+                       % (h['date'][:10], ('%d' % h['num']) if h.get('num') else '—',
+                          ('%+.2f%%' % _rr) if isinstance(_rr, (int, float)) else '—'))
+            _t += '</table>'
+        if _sh.get('top10'):
+            _t += '<p><b>十大流通股东</b>（%s）</p>' % (_sh.get('latest') or '')
+            if _sh.get('transfer_note'):
+                _t += '<p>⚠️ %s</p>' % _sh['transfer_note']
+            _t += ('<table><tr><th>#</th><th>股东</th><th>持股(万股)</th><th>占流通</th><th>环比</th></tr>')
+            for h in _sh['top10'][:10]:
+                _q = h.get('qoq')
+                _t += ('<tr><td>%d</td><td>%s</td><td class="num">%.1f</td>'
+                       '<td class="num">%.2f%%</td><td class="num %s">%s</td></tr>'
+                       % (h['rank'], esc(h['name']), h['hold_wan'], h['pct'],
+                          ('up' if (_q or 0) > 0 else 'dn'),
+                          ('%+.1f%%' % _q) if isinstance(_q, (int, float)) else '—'))
+            _t += '</table>'
+        A(C('筹码结构 · 成本分布与股东', _t, badge='换手衰减估算 · 非真实筹码',
+            tone='warn' if (_chip and _chip.get('above', 0) > 70) else ''))
+
+    # ★ 公司经营画像（2026-10-27 新增）：落到业务数据，用上下游周转互相印证
+    try:
+        _bp = ds.business_profile(d.get('code') or '')
+    except Exception:
+        _bp = {}
+    if _bp.get('rows'):
+        _r = _bp['rows'][0]
+        _t = ''
+        _mb = _bp.get('main') or {}
+        _bp_prod = _mb.get('by_product') or []
+        _bp_reg = _mb.get('by_region') or []
+        if _bp_prod or _bp_reg:
+            _t += '<p><b>主营构成</b>（%s）</p><ul>' % (_mb.get('date') or '最新')
+            for _n, _p in (_bp_prod or [])[:4]:
+                _t += '<li>%s：<b>%.2f%%</b></li>' % (esc(_n), _p)
+            _t += '</ul>'
+            if _bp_reg:
+                _t += '<p class="tiny">分地区：' + '　'.join('%s <b>%.2f%%</b>' % (esc(_n), _p) for _n, _p in _bp_reg) + '</p>'
+
+        _t += ('<p><b>上下游周转</b>（半年报口径折算天数 —— 用于判断"谁在占谁的钱"）</p>'
+               '<table><tr><th>报告期</th><th>应收天数</th><th>存货天数</th><th>应付天数</th>'
+               '<th>现金转换周期 CCC</th><th>毛利率</th><th>净利率</th></tr>')
+        for _x in _bp['rows'][:4]:
+            def _n0(v, suf='天'):
+                return ('%.0f%s' % (v, suf)) if isinstance(v, (int, float)) else '—'
+            _ccc = _x['ccc']
+            _cc = ('%.0f 天' % _ccc) if isinstance(_ccc, (int, float)) else '—'
+            _t += ('<tr><td>%s</td><td class="num">%s</td><td class="num">%s</td>'
+                   '<td class="num">%s</td><td class="num"><b>%s</b></td>'
+                   '<td class="num">%s</td><td class="num">%s</td></tr>'
+                   % (_x['date'][:7], _n0(_x['ar_days']), _n0(_x['inv_days']), _n0(_x['ap_days']),
+                      _cc, _n0(_x['gross_margin'], '%'), _n0(_x['net_margin'], '%')))
+        _t += '</table>'
+
+        # 上下游印证结论（自动生成，全部基于上面的数字）
+        _ar, _ap, _ccc2 = _r['ar_days'], _r['ap_days'], _r['ccc']
+        if isinstance(_ar, (int, float)) and isinstance(_ap, (int, float)):
+            if _ap > _ar:
+                _t += ('<p>✅ <b>应付天数（%.0f）> 应收天数（%.0f）</b> —— 公司<b>净占用上游资金 %.0f 天</b>，'
+                       '在产业链中有议价能力（贸易商的典型优势）。</p>' % (_ap, _ar, _ap - _ar))
+            else:
+                _t += ('<p>⚠️ <b>应收天数（%.0f）> 应付天数（%.0f）</b> —— 公司<b>为下游垫资 %.0f 天</b>，'
+                       '回款压力在下游。</p>' % (_ar, _ap, _ar - _ap))
+        if isinstance(_ccc2, (int, float)):
+            if _ccc2 < 0:
+                _t += '<p><b>CCC = %.0f 天 &lt; 0</b> —— 用上游的钱做生意，营运资本为负，最强形态。</p>' % _ccc2
+            elif _ccc2 <= 30:
+                _t += '<p><b>CCC = %.0f 天</b>（0~30）—— 营运效率良好。</p>' % _ccc2
+            elif _ccc2 <= 60:
+                _t += '<p><b>CCC = %.0f 天</b>（30~60）—— 需要一定自有资金垫付。</p>' % _ccc2
+            else:
+                _t += '<p>⚠️ <b>CCC = %.0f 天</b>（&gt;60）—— 垫资重，资金链压力大。</p>' % _ccc2
+
+        _e = _r.get('exp') or {}
+        _t += ('<p class="tiny">费用结构：销售 %.2f%%　管理 %.2f%%　财务 %.2f%%（占营收）；'
+               '毛利率 %.2f%%、净利率 %.2f%%。</p>'
+               % (_e.get('SALE_EXPENSE') or 0, _e.get('MANAGE_EXPENSE') or 0, _e.get('FINANCE_EXPENSE') or 0,
+                  _r.get('gross_margin') or 0, _r.get('net_margin') or 0))
+        _t += ('<p class="tiny">⚠️ <b>读法</b>：毛利率低 + 周转快 = 贸易商模式（薄利多销）；'
+               '毛利率低 + 周转慢 = 危险。天数按"半年报×180 / 全年×360"折算，与年报口径可能有小差异。</p>')
+        A(C('公司经营分析 · 业务落地', _t, badge='主营构成 · 上下游周转',
+            tone='ok' if (isinstance(_r.get('ccc'), (int, float)) and _r['ccc'] <= 60) else 'warn'))
+
     # ★ 现金流质量 · 归因（2026-10-27 新增）
     #   动机：单看「经营现金流为负」会得出完全相反的结论 —— 贸易/出口型企业
     #   「上半年铺货、下半年回款」，实测 002091 2025H1 −2.15 亿、全年 +23.45 亿。
