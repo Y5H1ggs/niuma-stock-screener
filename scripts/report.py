@@ -514,6 +514,18 @@ def gather(code, sector_top=4, cash=None, do_bt=True, do_ladder=True, anon=False
          'fee': float(cfg.get('fee_rate_roundtrip', 0.0018)),
          'stop': float(cfg.get('stop_loss_pct', -4.0)),
          'target': float(cfg.get('take_profit_pct', 2.0))}
+    # ★ 持仓（2026-10-27）：报告必须知道"你手上有没有这只票"
+    #   此前报告是纯"单票分析器"，不读台账 → 有持仓时也看不到成本/盈亏/止损，
+    #   使用者会以为"价格读错了"（实则报告压根没提持仓）。
+    #   ⚠️ anon 模式（给外部看）**不得**输出持仓，故先判 anon。
+    d['position'] = None
+    if not anon:
+        try:
+            import journal as _J
+            _hit = [t for t in _J.open_positions() if str(t.get('code')) == str(code)]
+            d['position'] = _hit[0] if _hit else None
+        except Exception:
+            d['position'] = None
     if (not anon) and (not allowed(code)):
         pre = '、'.join(str(x) for x in (cfg.get('allowed_prefixes') or []))
         d['warn_allowed'] = (f'⚠️ 该标的超出你在 config.json 里声明的可交易板块'
@@ -1399,6 +1411,46 @@ def build(d, notes):
 <tr><td>大盘（{hm}）</td><td>{'　|　'.join(ibits)}</td><td>—</td></tr>
 {d.get('anon') and '<tr><td>资金占用</td><td>—（本报告为<b>脱敏版</b>，不含账户资金与持仓口径）</td><td>—</td></tr>' or f"<tr><td>资金占用</td><td><b>{n100(s['price'], d['cash'])} 股 = {n100(s['price'], d['cash']) * s['price']:.0f} 元</b>（config 资金 {d['cash']:.0f}）</td><td>双边费用约 {n100(s['price'], d['cash']) * s['price'] * d['fee']:.0f} 元，需涨 {d['fee'] * 100:.2f}% 才回本</td></tr>"}
 </table>'''
+    # ★ 持仓卡片（2026-10-27 新增）
+    _pos = d.get('position')
+    if _pos:
+        _px = (d.get('snap') or {}).get('price') or _pos.get('buy_price') or 0
+        _cost = float(_pos.get('buy_price') or 0)
+        _sh = int(_pos.get('shares') or 0)
+        _tot = float(_pos.get('buy_total') or 0)
+        _mv = _px * _sh
+        _pnl = _mv - _tot
+        _pct = (_pnl / _tot * 100) if _tot else 0
+        _stop = float(_pos.get('stop_price') or 0)
+        _tgt = float(_pos.get('target_price') or 0)
+        _t = ('<table><tr><th>项目</th><th>数值</th><th>距现价</th></tr>')
+        _t += ('<tr><td>持仓</td><td><b>%d 股</b></td><td>—</td></tr>' % _sh)
+        _t += ('<tr><td>成本价</td><td><b>%.3f</b></td><td class="num %s">%+.2f%%</td></tr>'
+               % (_cost, cls(_pct), _pct))
+        _t += ('<tr><td>持仓成本</td><td>%.2f 元</td><td>—</td></tr>' % _tot)
+        _t += ('<tr><td>现价 / 市值</td><td>%.2f → %.2f 元</td><td>—</td></tr>' % (_px, _mv))
+        _t += ('<tr><td><b>浮动盈亏</b></td><td class="num %s"><b>%+.2f 元</b></td>'
+               '<td class="num %s"><b>%+.2f%%</b></td></tr>' % (cls(_pnl), _pnl, cls(_pct), _pct))
+        if _stop:
+            _t += ('<tr><td><b>纪律止损</b></td><td><b>%.2f</b></td>'
+                   '<td class="num dn">%+.2f%%</td></tr>' % (_stop, (_stop / _px - 1) * 100 if _px else 0))
+        if _tgt:
+            _t += ('<tr><td>目标价</td><td>%.2f</td><td class="num up">%+.2f%%</td></tr>'
+                   % (_tgt, (_tgt / _px - 1) * 100 if _px else 0))
+        _t += '</table>'
+        # 破位提示
+        if _stop and _px and _px <= _stop:
+            _t += '<p>🔴 <b>现价已跌破纪律止损 %.2f</b> —— 按纪律应执行，不要再等反弹。</p>' % _stop
+        elif _stop and _px:
+            # ★ 2026-10-27 修：原来写 "距止损还有 %.2f%%" 却用 (_stop/_px-1) 算，
+            #   现价高于止损时结果为负（如 -5.17%），读起来像"还要涨 5%"。
+            #   改成明确的"跌至止损需 X%"，并说明对应亏损。
+            _t += ('<p class="tiny">跌至止损 <b>%.2f</b> 需再跌 <b>%.2f%%</b>；'
+                   '该位置对应亏损约 <b>%+.0f 元（%.1f%%）</b>。</p>'
+                   % (_stop, (1 - _stop / _px) * 100 if _px else 0,
+                      (_stop - _cost) * _sh, (_stop / _cost - 1) * 100 if _cost else 0))
+        A(C('持仓状态', _t, badge='来自交易台账', tone='warn' if _pnl < 0 else 'ok'))
+
     A(C('一、数据速览',
         SC('核心盘口', kp, cnt=f'{hm} 快照')
         + SC('明细（价格 / 量能 / 盘口 / 资金 / 大盘 / 资金占用）', tbl),
@@ -1806,7 +1858,8 @@ def build(d, notes):
             _snap = FR.snapshot(d.get('code') or '')
             if _snap and _snap.get('items'):
                 _mf_sc = SC('多因子分析（仅列已过检验的因子）', FR.html_table(_snap),
-                            cnt='信号日 %s · %d 个因子' % (_snap['date'], len(_snap['items'])))
+                            cnt='信号日 %s（上一交易日收盘口径）· %d 个因子'
+                                % (_snap['date'], len(_snap['items'])))
         except Exception:
             _mf_sc = ''
         A(C('四、技术分析',
