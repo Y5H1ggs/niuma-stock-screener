@@ -2188,11 +2188,30 @@ def main():
         notes.setdefault('title', a.title)
 
     cash = a.cash if a.cash else cfg.get('cash')
+    # ★ v1.2.38：**现金优先取台账（account.json）**，config.json 只是启动基线。
+    #   实测 2026-10-28：config.json 的基线与台账实际现金**相差数倍** ——
+    #   按基线算"可买股数"会给出"买得起 100 股"，而真实资金**连一手都不够**，结论完全不同。
+    #   （具体金额属账户口径，不入库）
+    #   台账有交易流水的增量入账（P94 已修），所以台账更权威。
+    #   ⚠️ anon 模式不读也不展示（脱敏）。
+    cash_src = '命令行' if a.cash else 'config.json'
+    if not a.cash and not a.anon:
+        try:
+            import journal as _J
+            _ac = _J.account() or {}
+            _v = _ac.get('cash')
+            if isinstance(_v, (int, float)) and _v >= 0:
+                if abs(float(_v) - float(cash or 0)) > 1:
+                    print('  ⚠️ 台账现金 %.2f ≠ config.json %.2f → **以台账为准**'
+                          '（config.json 只是启动基线，不随交易变动）' % (_v, cash or 0))
+                cash = float(_v)
+                cash_src = '台账 account.json'
+        except Exception:
+            pass
     if a.anon:
         print(f'[1/3] 采集 {a.code} 数据 …（脱敏模式：不读取也不展示账户资金）')
     else:
-        print(f'[1/3] 采集 {a.code} 数据 …（资金 {cash:.0f} 元，来源：'
-              f'{"命令行" if a.cash else "config.json"}）')
+        print(f'[1/3] 采集 {a.code} 数据 …（资金 {cash:.0f} 元，来源：{cash_src}）')
     d = gather(a.code, sector_top=a.sector_top, cash=cash,
                do_bt=not a.no_bt, do_ladder=not a.no_ladder, anon=a.anon)
     s = d['snap']
