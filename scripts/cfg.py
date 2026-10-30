@@ -29,7 +29,13 @@ DEFAULTS = {
     'fee_rate_roundtrip': None,                     # 旧版粗略比例口径（仅旧配置生效）
     'stop_loss_pct': -4.0,                          # 你的止损纪律（负值，%）
     'take_profit_pct': 2.0,                         # 兑现目标（%）
-    'position_mode': 'single',                      # single = 全仓单吊单只
+    # ★ v1.2.40：仓位模式默认改为 kelly（量化胜率优先 + 分散）。
+    #   依据：最优形态实测 p=0.528、b=1.29 → 全凯利 16.3%、半凯利 8.2%。
+    #   **满仓 single = 凯利的 6.1 倍下注（超额下注），长期必然爆仓，已禁止作为默认。**
+    'position_mode': 'kelly',                       # single | equal | kelly（推荐）
+    'kelly_fraction': 0.5,                          # 半凯利
+    'max_single_pct': 0.33,                         # 单笔上限（一手约束下的妥协）
+    'max_positions': 3,                             # 最多同时持有几只
     'min_avg_amount_yi': 0.5,                       # 最小日均成交额（亿元），过滤流动性差的票
     # ---- 账户级风控（README P0-2）----
     'max_drawdown_pct': 15.0,                       # 已实现回撤达到该值 → 触发熔断（暂停开仓）
