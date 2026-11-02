@@ -169,7 +169,9 @@ def n100(price, cash=None):
 # ---------------------------------------------------------------- 1. 实时快照（腾讯）
 def snapshot(codes, raw=False):
     """腾讯实时快照。返回 {code: {name,price,chg,prev,open,high,low,vol,amount,hs,lb,outer,inner,limit_up,bids,asks,time,sealed}}
-    ⚠️ 按请求顺序对齐，勿用返回内代码做 key。
+    ⚠️ **按返回变量名 `v_XXXXXX` 里的代码对齐（v1.2.41 修复）**，不再依赖请求顺序 ——
+       腾讯对北交所代码不返回对应段，按顺序对齐会整体错位一格。
+       定位失败的段**直接跳过**（宁可少一只，不可错一只），不静默串名。
     ⚠️ 显式 sh/sz/bj 前缀会保留（指数必须显式传 sh000001），无前缀的走自动判断。"""
     codes = [str(c) if str(c)[:2] in ('sh', 'sz', 'bj') else str(c).lstrip('shsz') for c in codes]
     url = 'http://qt.gtimg.cn/q=' + ','.join(tsym(c) for c in codes)
@@ -177,13 +179,40 @@ def snapshot(codes, raw=False):
     out = {}
     if not txt:
         return out
-    for i, seg in enumerate(txt.strip().split(';')):
+    # ★★ 2026-11-02 修复（严重）：原实现用 `enumerate` 序号对齐 `codes[i]`，
+    #   而腾讯批量接口**对北交所代码（920xxx/8xxxxx）会直接不返回该段** →
+    #   序号照常递增 → **从那只票开始，后面全部错位一格**（张冠李戴）。
+    #   实测：电机Ⅲ 27 只（含 920011/920100）→ **20 只名称/价格错配**；剔除北交所后 0 错。
+    #   危险点：**不报错、价格量级也合理**，只是安静地把 A 的数据挂到 B 头上（P93 同族）。
+    #   修法：**按返回变量名 `v_sz000001` 里的代码定位**，顺序仅作最后兜底。
+    _alias = {}
+    for _c in codes:
+        _alias.setdefault(_c, _c)                     # 用户传入形式（可能带 sh/sz/bj 前缀）
+        _alias.setdefault(_c[-6:], _c)                # 裸 6 位码
+    _mismatch = 0
+    for seg in txt.strip().split(';'):
+        seg = seg.strip()
         if '~' not in seg:
             continue
-        f = seg.split('~')
-        if len(f) < 50 or i >= len(codes):
+        _head, _, _body = seg.partition('=')
+        f = (_body if _body else seg).split('~')
+        if len(f) < 50:
             continue
-        code = codes[i]
+        # ① 主判据：变量名里的代码（v_sz000001 / v_sh600601 / v_bj920011）
+        code = None
+        _h = _head.strip()
+        if _h.startswith('v_'):
+            _r = _h[2:]
+            code = _alias.get(_r) or _alias.get(_r[2:] if _r[:2] in ('sz', 'sh', 'bj') else _r)
+        # ② 次判据：返回体第 3 字段（腾讯自带代码）
+        if code is None:
+            code = _alias.get(str(f[2]).strip())
+        # ③ 兜底：仍然定位不到 → 跳过该段（**宁可少一只，不可错一只**）
+        if code is None:
+            _mismatch += 1
+            continue
+        if str(f[2]).strip() and str(f[2]).strip()[-6:] != code[-6:]:
+            _mismatch += 1        # 变量名与返回体代码不一致 → 记录，以变量名为准
         prev = _fl(f[4]); px = _fl(f[3]); lim = round(prev * 1.1, 2)
         try:
             bids = [(f[9 + k * 2], int(_fl(f[10 + k * 2]))) for k in range(5)]
@@ -201,6 +230,13 @@ def snapshot(codes, raw=False):
             'sealed': (prev > 0 and px >= lim - 1e-6 and bool(asks)
                        and all(q == 0 for _, q in asks) and any(q > 0 for _, q in bids)),
         }
+    # ★ 覆盖率自检：请求 N 只但只解析出 M 只（或出现不一致）时，主动告警，
+    #   避免"少了几只"被下游当成"就这么多"（P72/P79 同族：截断伪装成完整）。
+    if len(out) < len(set(codes)) or _mismatch:
+        import sys as _sys
+        _sys.stderr.write('[snapshot] 请求 %d 只，解析出 %d 只，不一致 %d 处'
+                          '（北交所 920xxx/8xxxxx 腾讯可能不返回；下游须自行判空，勿当作"无此股"）\n'
+                          % (len(set(codes)), len(out), _mismatch))
     return out
 
 
