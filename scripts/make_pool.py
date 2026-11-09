@@ -28,48 +28,55 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import ds
 
-N = int(sys.argv[1]) if len(sys.argv) > 1 else 120
-OUT = sys.argv[2] if len(sys.argv) > 2 else '_pool_main.txt'
-SEED = 20261009
 
-print('时间', time.strftime('%H:%M:%S'))
-rows = []
-for pg in range(1, 13):
-    r = ds.dce_get('RPT_DMSK_TS_STOCKNEW', pz=500, page=pg)
-    if not r:
-        break
-    rows += r
-    if len(r) < 500:
-        break
-    time.sleep(0.4)
-print('  报表取到 %d 行（**仅用其代码/名称，不使用价格字段** —— 避免前视）' % len(rows))
+def main():
+    N = int(sys.argv[1]) if len(sys.argv) > 1 else 120
+    OUT = sys.argv[2] if len(sys.argv) > 2 else '_pool_main.txt'
+    SEED = 20261009
 
-seen, cand = set(), []
-for x in rows:
-    c = str(x.get('SECURITY_CODE') or '')
-    nm = str(x.get('SECURITY_NAME_ABBR') or '')
-    # ★ 只按**静态属性**筛：板块前缀 + 是否 ST（名称含 ST/退）。
-    #   **刻意不看 CLOSE_PRICE / TURNOVERRATE** —— 那两个是时变量，用它筛池就是前视。
-    if not ds.allowed(c) or 'ST' in nm.upper() or '退' in nm:
-        continue
-    if c in seen:
-        continue
-    seen.add(c)
-    cand.append((c, nm))
+    print('时间', time.strftime('%H:%M:%S'))
+    rows = []
+    for pg in range(1, 13):
+        r = ds.dce_get('RPT_DMSK_TS_STOCKNEW', pz=500, page=pg)
+        if not r:
+            break
+        rows += r
+        if len(r) < 500:
+            break
+        time.sleep(0.4)
+    print('  报表取到 %d 行（**仅用其代码/名称，不使用价格字段** —— 避免前视）' % len(rows))
 
-# 固定种子随机抽样（不按代码排序 —— 会偏向 000xxx/6000xx 段；也不按成交额 —— 会随时间漂移）
-random.seed(SEED)
-pick = random.sample(cand, min(N, len(cand)))
-pick.sort(key=lambda z: z[0])
-print('  池：主板 + 非 ST（**无价格条件**）= %d 只 → 固定种子(%d)抽样 %d 只' % (len(cand), SEED, len(pick)))
+    seen, cand = set(), []
+    for x in rows:
+        c = str(x.get('SECURITY_CODE') or '')
+        nm = str(x.get('SECURITY_NAME_ABBR') or '')
+        # ★ 只按**静态属性**筛：板块前缀 + 是否 ST（名称含 ST/退）。
+        #   **刻意不看 CLOSE_PRICE / TURNOVERRATE** —— 那两个是时变量，用它筛池就是前视。
+        if not ds.allowed(c) or 'ST' in nm.upper() or '退' in nm:
+            continue
+        if c in seen:
+            continue
+        seen.add(c)
+        cand.append((c, nm))
 
-io.open(OUT, 'w', encoding='utf-8').write('\n'.join(c for c, _ in pick))
-print('  已写入 %s' % OUT)
-print('  沪深分布：沪 %d / 深 %d' % (sum(1 for c, _ in pick if c[0] == '6'),
-                                 sum(1 for c, _ in pick if c[0] == '0')))
-print('  样例：', '、'.join('%s %s' % (c, n) for c, n in pick[:8]))
-print()
-print('  ⚠️ 价格/流动性等**时变条件**请改用逐时点参数：')
-print('     python factors.py --pool %s --max-px 15 --days 500' % OUT)
-print('     python model.py   --pool %s --max-px 15' % OUT)
-print('  ⚠️ 幸存者偏差（退市票不在样本）**数据源层面无法修复**，结论应视为偏乐观。')
+    # 固定种子随机抽样（不按代码排序 —— 会偏向 000xxx/6000xx 段；也不按成交额 —— 会随时间漂移）
+    random.seed(SEED)
+    pick = random.sample(cand, min(N, len(cand)))
+    pick.sort(key=lambda z: z[0])
+    print('  池：主板 + 非 ST（**无价格条件**）= %d 只 → 固定种子(%d)抽样 %d 只' % (len(cand), SEED, len(pick)))
+
+    io.open(OUT, 'w', encoding='utf-8').write('\n'.join(c for c, _ in pick))
+    print('  已写入 %s' % OUT)
+    print('  沪深分布：沪 %d / 深 %d' % (sum(1 for c, _ in pick if c[0] == '6'),
+                                     sum(1 for c, _ in pick if c[0] == '0')))
+    print('  样例：', '、'.join('%s %s' % (c, n) for c, n in pick[:8]))
+    print()
+    print('  ⚠️ 价格/流动性等**时变条件**请改用逐时点参数：')
+    print('     python factors.py --pool %s --max-px 15 --days 500' % OUT)
+    print('     python model.py   --pool %s --max-px 15' % OUT)
+    print('  ⚠️ 幸存者偏差（退市票不在样本）**数据源层面无法修复**，结论应视为偏乐观。')
+
+
+if __name__ == '__main__':
+    main()
+

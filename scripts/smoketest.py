@@ -239,7 +239,14 @@ def main():
     print('【结论】')
     print('=' * 96)
     if bad == 0 and not faults:
-        print('  ✅ 静态 + 动态全部通过')
+        if '--static' in sys.argv:
+            # ★ P103：旧文案在 --static 下也写「静态 + 动态全部通过」，
+            #   但动态冒烟被跳过 →把「没跑」算成「通过」，属判据失效族（P56/P69）。
+            print('  ✅ 静态检查通过（语法 / import / 模式扫描）')
+            print('  ⚠️ --static 未跑动态冒烟，不可据此宣称全链路通过')
+        else:
+            print('  ✅ 静态 + 动态全部通过')
+        print('  ⚠️ 模式扫描的 ⚠️ 项为「待人工确认」，未计入通过判据')
     else:
         if bad:
             print('  ❌ 静态 %d 项失败' % bad)

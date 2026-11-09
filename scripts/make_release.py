@@ -16,6 +16,9 @@
 import io, json, os, re, subprocess, sys, urllib.error, urllib.request
 
 REPO_FALLBACK = 'Y5H1ggs/niuma-stock-screener'
+# ★ P103：顶层默认值。`body_from_changelog()` 是顶层函数，只能读模块级 REPO；
+#   执行段包进 main() 后 REPO 曾变成局部变量 → NameError。main() 会用 git remote 覆盖它。
+REPO = REPO_FALLBACK
 
 
 def sh(cmd):
@@ -66,79 +69,87 @@ def call(url, data=None, method='GET', tk=''):
         return 0, {'message': '%s: %s' % (type(e).__name__, e)}
 
 
-args = [a for a in sys.argv[1:] if not a.startswith('--')]
-DRY = '--dry' in sys.argv
-if not args:
-    print(__doc__)
-    sys.exit(1)
-TAG = args[0]
 
-REPO = repo_from_git()
-print('  仓库:', REPO)
-print('  版本:', TAG)
+def main():
+    global REPO                 # ★ 让赋值写回模块级，供 body_from_changelog() 读取
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    DRY = '--dry' in sys.argv
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+    TAG = args[0]
 
-body = body_from_changelog(TAG)
-if not body:
-    print('  ❌ CHANGELOG.md 里找不到 %s 的段落 —— 先补 CHANGELOG，再来发 Release。' % TAG)
-    sys.exit(1)
-print('  ✓ 已从 CHANGELOG 提取正文（%d 字符）' % len(body))
+    REPO = repo_from_git()
+    print('  仓库:', REPO)
+    print('  版本:', TAG)
 
-if DRY:
-    print('\n' + '=' * 90)
-    print(body)
-    sleep_note = ''
-    print('=' * 90)
-    print('(--dry：未调用 API)')
-    sys.exit(0)
+    body = body_from_changelog(TAG)
+    if not body:
+        print('  ❌ CHANGELOG.md 里找不到 %s 的段落 —— 先补 CHANGELOG，再来发 Release。' % TAG)
+        sys.exit(1)
+    print('  ✓ 已从 CHANGELOG 提取正文（%d 字符）' % len(body))
 
-TK = os.environ.get('GITHUB_TOKEN') or ''
-if not TK:
-    # fallback：脚本内调用 `git credential fill`（需要在 stdin 喂协议信息）。
-    # ⚠️ 本机实测在**子进程里**取不到（返回空）—— 而 bash 管道下是可行的。
-    #   所以用法优先传环境变量；这里只是兜底，并打印调试信息便于定位。
-    try:
-        p = subprocess.run(['git', 'credential', 'fill'],
-                           input='protocol=https\nhost=github.com\n\n',
-                           capture_output=True, text=True, timeout=20)
-        for line in p.stdout.splitlines():
-            if line.startswith('password='):
-                TK = line.split('=', 1)[1].strip()
-        if not TK:
-            print('  [debug] git credential 返回空；stdout=%r stderr=%r'
-                  % (p.stdout[:120], p.stderr[:120]))
-    except Exception as e:
-        print('  [debug] git credential 调用异常:', e)
-if not TK:
-    print('  ❌ 取不到 token。请改用环境变量传入：')
-    print('     TOKEN=$(printf "protocol=https\\nhost=github.com\\n\\n" | git credential fill \\')
-    print('              | grep ^password= | cut -d= -f2)')
-    print('     GITHUB_TOKEN=$TOKEN python scripts/make_release.py %s' % TAG)
-    sys.exit(1)
-print('  ✓ token 已取到（%d 字符）' % len(TK))
+    if DRY:
+        print('\n' + '=' * 90)
+        print(body)
+        sleep_note = ''
+        print('=' * 90)
+        print('(--dry：未调用 API)')
+        sys.exit(0)
 
-payload = json.dumps({
-    'tag_name': TAG,
-    'name': TAG,
-    'body': body,
-    'draft': False,
-    'prerelease': False,
-}, ensure_ascii=False).encode('utf-8')
+    TK = os.environ.get('GITHUB_TOKEN') or ''
+    if not TK:
+        # fallback：脚本内调用 `git credential fill`（需要在 stdin 喂协议信息）。
+        # ⚠️ 本机实测在**子进程里**取不到（返回空）—— 而 bash 管道下是可行的。
+        #   所以用法优先传环境变量；这里只是兜底，并打印调试信息便于定位。
+        try:
+            p = subprocess.run(['git', 'credential', 'fill'],
+                               input='protocol=https\nhost=github.com\n\n',
+                               capture_output=True, text=True, timeout=20)
+            for line in p.stdout.splitlines():
+                if line.startswith('password='):
+                    TK = line.split('=', 1)[1].strip()
+            if not TK:
+                print('  [debug] git credential 返回空；stdout=%r stderr=%r'
+                      % (p.stdout[:120], p.stderr[:120]))
+        except Exception as e:
+            print('  [debug] git credential 调用异常:', e)
+    if not TK:
+        print('  ❌ 取不到 token。请改用环境变量传入：')
+        print('     TOKEN=$(printf "protocol=https\\nhost=github.com\\n\\n" | git credential fill \\')
+        print('              | grep ^password= | cut -d= -f2)')
+        print('     GITHUB_TOKEN=$TOKEN python scripts/make_release.py %s' % TAG)
+        sys.exit(1)
+    print('  ✓ token 已取到（%d 字符）' % len(TK))
 
-st, d = call('https://api.github.com/repos/%s/releases/tags/%s' % (REPO, TAG), tk=TK)
-if st == 200:
-    print('  已存在 Release id=%s → 更新（PATCH）' % d.get('id'))
-    st2, d2 = call('https://api.github.com/repos/%s/releases/%s' % (REPO, d['id']),
-                   payload, 'PATCH', TK)
-else:
-    print('  无同 tag Release（HTTP %s）→ 新建（POST）' % st)
-    st2, d2 = call('https://api.github.com/repos/%s/releases' % REPO, payload, 'POST', TK)
+    payload = json.dumps({
+        'tag_name': TAG,
+        'name': TAG,
+        'body': body,
+        'draft': False,
+        'prerelease': False,
+    }, ensure_ascii=False).encode('utf-8')
 
-if st2 in (200, 201):
-    print('  ✅ Release 就绪')
-    print('     name     : %s' % d2.get('name'))
-    print('     tag_name : %s' % d2.get('tag_name'))
-    print('     html_url : %s' % d2.get('html_url'))
-else:
-    print('  ❌ 失败 HTTP %s' % st2)
-    print('     ', json.dumps(d2, ensure_ascii=False)[:400])
-    sys.exit(1)
+    st, d = call('https://api.github.com/repos/%s/releases/tags/%s' % (REPO, TAG), tk=TK)
+    if st == 200:
+        print('  已存在 Release id=%s → 更新（PATCH）' % d.get('id'))
+        st2, d2 = call('https://api.github.com/repos/%s/releases/%s' % (REPO, d['id']),
+                       payload, 'PATCH', TK)
+    else:
+        print('  无同 tag Release（HTTP %s）→ 新建（POST）' % st)
+        st2, d2 = call('https://api.github.com/repos/%s/releases' % REPO, payload, 'POST', TK)
+
+    if st2 in (200, 201):
+        print('  ✅ Release 就绪')
+        print('     name     : %s' % d2.get('name'))
+        print('     tag_name : %s' % d2.get('tag_name'))
+        print('     html_url : %s' % d2.get('html_url'))
+    else:
+        print('  ❌ 失败 HTTP %s' % st2)
+        print('     ', json.dumps(d2, ensure_ascii=False)[:400])
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
+

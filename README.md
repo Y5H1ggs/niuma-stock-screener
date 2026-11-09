@@ -6,7 +6,7 @@
 > 名字来源：干活的牛马自己给自己写工具。**不装任何 pip 包**，纯标准库跑通全链路。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.41`（2026-11-02）　·　许可 MIT　·　完整版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.2.42`（2026-11-09）　·　许可 MIT　·　完整版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
@@ -132,13 +132,13 @@
 
 ---
 
-### P3 · 体验（全部 ⏳ 待做）
+### P3 · 体验（#12 已结清，其余 ⏳ 待做）
 
 | # | 待办 | 现状 |
 |---|---|---|
 | 10 | **盘前数据降级方案** | 09:30 前 `clist` 的 f2/f3/f62 返回 `-`，板块面几乎全废 → 提供"上一交易日收盘口径"的完整报告模式 |
 | 11 | **报告章节可配置** | 现在 5 张卡必显，报告 86 KB → 支持 `--only tech,fund` 裁剪 |
-| 12 | **三个脚本缺 `if __name__ == '__main__'`** | `build_panel` / `factor_ic` / `analyze_panel` 把主逻辑写在模块顶层，`import` 即执行并去找数据文件 → `smoketest` 报 FileNotFoundError。**不是数据缺失，是结构问题**（也因此无法被其他脚本复用）。发现于 v1.2.41 |
+| 12 | ~~**三个脚本缺 `if __name__ == '__main__'`**~~ | ✅ **v1.2.42 已修**：`analyze_panel` / `build_panel` / `factor_ic` / `make_pool` / `make_release` 五个脚本补 `main()` 守卫。改写前做 `tokenize` 跨行字符串检查，改写后用 `symtable` 排查作用域断裂 + 轻量 CLI 冒烟验执行路径 → 静态冒烟 4 个 ❌ 消失。发现于 v1.2.41，详见 P103 |
 | 13 | **免责声明机器可读化** | 把"这是估算 / 拿不到 / 样本不足"做成结构化字段，便于下游程序判断可信度 |
 
 ---
@@ -180,6 +180,8 @@
 | `scripts/verify.py` | 多接口交叉校验（快照 / K 线三源 / 板块资金两口径） |
 | `scripts/health.py` | 数据源健康自检 + 当日结论置信度 |
 | `scripts/selfcheck.py` | **自证校验**：不依赖第二数据源的**内部恒等关系**断言（主力=大单+超大单、量额单位、涨停价、费用方向…），已**常驻**接入 `report.py` |
+| `scripts/ds_ths.py` | **★ 同花顺可选增强源（v1.2.42）**：纯标准库子进程桥（依赖隔离，主力解释器没装 thsdk 也能用）。`blocks/industry/members` 权威板块归属与成分、`reports` 券商研报、`flows` 16 字段主动/被动资金、`klines` 第 4 路前复权日 K。**失败降级 `None`**；与东财口径不同源 → 只并列、禁交叉相加（P5/P102）。自检：`python ds_ths.py check` |
+| `scripts/_ths_worker.py` | 上桥的取数执行端，只在 thsdk 环境运行；修过 P102 三处「`ok:true` 但字段全空」 |
 | `scripts/smoketest.py` | **随机票全链路冒烟 + 已知错误模式扫描**（改完代码先跑它） |
 | `scripts/check_privacy.py` | **提交前隐私闸门**（纯标准库）：四种模式 —— 暂存区 / 提交信息 / 全量 / 历史审计；**禁词清单放在仓库外**，避免"禁词本身被提交" |
 | `scripts/install_hooks.py` | **一条命令重装隐私闸门钩子 + 端到端自检**（`.git/hooks` 不进版本库，换机器 / 重新 clone 后必须重装） |

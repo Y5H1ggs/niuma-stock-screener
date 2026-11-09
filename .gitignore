@@ -30,6 +30,9 @@ _universe*.json
 
 # 一次性临时脚本（约定以 _ 开头，用完即删；防手滑提交）
 scripts/_*.py
+# ★ v1.2.42 例外：`_ths_worker.py` 是 ds_ths.py 依赖的**正式取数桥模块**（不是临时脚本）。
+#   不放行会导致 git status 里根本没有它 → 上传后仓库缺文件、子进程桥直接断掉。
+!scripts/_ths_worker.py
 
 # ★ 单次监测/体检的落盘快照（json）——**含当时在看的真实标的**，
 #   如 scripts/_auction_0924.json 里就有"某票 + 实时价 + 五档"，
@@ -67,3 +70,7 @@ scripts/pool_deep.json
 
 # 隐私闸门禁词清单（**不入仓库**：写进去等于把禁词又公开一次）
 _privacy_terms.txt
+
+# ★ v1.2.42：同花顺 thsdk 认证会话（含临时账号凭证，绝不进公开仓库）
+account.session
+scripts/account.session
