@@ -262,6 +262,8 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
         _CLIST_META.update({'fid': fid, 'fs': fs, 'pages_ok': 0, 'pages_failed': 1,
                             'total': None, 'truncated': True, 'blocked_all': True,
                             'rows': 0, 'uniq': 0, 'complete': False,
+                            'fields': {}, 'fields_usable': False,
+                            'placeholder_rows': None,
                             'at': time.strftime('%H:%M:%S')})
         return []
     _key = (fid, fs, pages, pz, fields)
@@ -349,6 +351,27 @@ def clist(fid='f3', fs=MARKET_MAIN, pages=8, pz=100, fields='f12,f14,f2,f3,f6,f8
         seen.add(k)
         uniq.append(x)
     _m['uniq'] = len(uniq)
+    # ★ P106 / 优化 #1（P85 公共口径下沉）：字段可用率由**数据层**统一计算，
+    #   对**去重后的返回列表**统计，口径与调用方拿到的 rows 完全一致。
+    #   盘前/限流时 f2/f3/f62 会整批返回 '-'；此前各调用方各自重写 _ok() 统计，
+    #   smoketest 漏过一次就导致「0 只票被测却报通过」（P105）。
+    fq = {}
+    for _k in ('f2', 'f3', 'f62'):
+        present = [x for x in uniq if _k in x]
+        if not present:
+            continue
+        _v = sum(1 for x in present if _ok(x.get(_k)))
+        fq[_k] = {'valid': _v, 'total': len(present),
+                  'ratio': round(_v / len(present), 4)}
+    _m['fields'] = fq
+    _m['fields_usable'] = bool(fq) and all(d['ratio'] > 0 for d in fq.values())
+    _m['placeholder_rows'] = sum(
+        1 for x in uniq if 'f2' in x and not _ok(x.get('f2')))
+    # 不改 complete 的既有语义（只表示分页完整性），字段可用率是**独立**维度
+    # ★ 必须重新同步 _CLIST_META：326 行那次 update 发生在**去重之前**，
+    #   是值拷贝，后加的 fields 不会自动进去（实测 clist_quality() 返回 {} / None）。
+    _CLIST_META.clear()
+    _CLIST_META.update(_m)
     _CLIST_CACHE[_key] = (time.time(), dict(_m), list(uniq))
     # 缓存最多留 8 份，防止长期驻留内存
     if len(_CLIST_CACHE) > 8:
@@ -372,6 +395,26 @@ def clist_meta():
        不完整时只做展示、**不得据此下"全市场/板块内"的结论**。
     """
     return dict(_CLIST_META)
+
+
+def clist_quality():
+    """**最近一次 `clist()` 的字段可用率**（P85：下游不许各自重写统计口径）。
+
+    返回 {'fields': {'f2': {'valid','total','ratio'}, ...},
+          'placeholder_rows': f2 为占位符的行数, 'fields_usable': bool,
+          'rows': 去重后条数, 'complete': 分页完整性, 'at': 取数时刻}
+
+    ★ `complete` 与 `fields_usable` 是**两个独立维度**：分页完整 ≠ 字段有值。
+      盘前常见「600 行全部取回、但 f2/f3 全是 '-'」—— 此时 complete 可为 True，
+      而 fields_usable 为 False。调用方做行情判断前**两个都要看**。
+    """
+    m = dict(_CLIST_META)
+    return {'fields': m.get('fields') or {},
+            'placeholder_rows': m.get('placeholder_rows'),
+            'fields_usable': m.get('fields_usable'),
+            'rows': m.get('uniq', m.get('rows')),
+            'complete': m.get('complete'),
+            'at': m.get('at')}
 
 
 # ---------------------------------------------------------------- 3. 个股资金（东财 ulist.np）

@@ -74,3 +74,6 @@ _privacy_terms.txt
 # ★ v1.2.42：同花顺 thsdk 认证会话（含临时账号凭证，绝不进公开仓库）
 account.session
 scripts/account.session
+
+# ★ v1.2.44：打包产物（生成物不进仓库，只在本机 dist/ 供上传）
+dist/

@@ -1,18 +1,36 @@
 ---
 name: 选股分析牛马工具
-description: A股选股分析牛马工具——T+1 隔日接力选股全流程 SOP（首次使用先做基础数据录入 → 全市场扫描 → 行业主线 → 连板基因分类 → 深检回测 → T0/T1分层 → 概率标注 → 一键生成卡片式 HTML 深度分析报告）。当用户要求尾盘选票、明日介入预测、强势池扫描、竞价校准、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置数据源限流降级链、判读铁律与踩坑清单；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。
-version: 1.2.43
-license: 仅供个人研究使用，不构成投资建议
+display_name: 选股分析牛马工具
+display_name_en: A-Share Research Workbench
+description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、107 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
+description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
+version: 1.2.44
+license: MIT
 agent_created: true
 ---
 
-# 选股分析牛马工具 · A股 T+1 隔日接力选股工作流
+# 选股分析牛马工具 · A股个人研究复盘与量化胜率工作流
 
-> 一个自包含、零依赖的 A 股短线研究工作流：**扫描 → 主线 → 接力基因 → 回测 → 评级 → 卡片式 HTML 报告**。
-> 打工人自己用的牛马工具，不养闲人（不装任何 pip 包）。
+> **核心链路零依赖**（纯 Python 标准库）的 A 股研究工作流：
+> **量化胜率 → 板块接力 → 形态回测 → 评级 → 卡片式 HTML 报告**。
+>
+> ★ **v1.2.40 起交易模式已重构**：波段 / 修复为主、**凯利仓位 + 2~3 只分散**，满仓单吊已废弃。
+> 下文历史章节里出现的「隔日超短 / 强势口径 / 连板基因」**只作形态描述，不再代表期望**
+> （146,028 条面板实测这些口径为负期望，见 §1.0 与 CHANGELOG v1.2.40）。
 
-为隔日超短模式（当日买 / 次日卖）产出"明日介入候选"。核心理念：
-**选股能力决定打平，alpha 全在风控与情绪周期判定。**
+## ★ 云端 / 上架运行条件（v1.2.44）
+
+| 项 | 要求 |
+|---|---|
+| Python | 3.8+；**核心链路仅用标准库**，无需 pip 安装任何包 |
+| 网络 | 需能访问 `qt.gtimg.cn`、`push2*.eastmoney.com`、`money.finance.sina.com.cn`、`web.ifzq.gtimg.cn` 及巨潮公告域。⚠️ 若云平台做网络隔离导致外网不可达，行情类能力将不可用——用 `ds.clist_quality()` 看字段有效率、`run.py doctor` 做体检 |
+| 可选增强源 | `thsdk` + `pandas` 为**可选**，装在独立解释器；装不了或设 `THS_DISABLE=1` 时**安静降级为 `None`**，零噪声、零子进程、主流程不受影响 |
+| 脚本调用 | **单条命令 + 脚本绝对路径**，不要 `cd xxx && ...`、不要管道 / 重定向（平台命令隔离约束）。统一入口：`python "<包内绝对路径>/scripts/run.py" <子命令> [参数]`；`run.py doctor` 输出环境体检，`run.py --help` 列全部子命令 |
+| 个人参数 | 首次运行把 `config.example.json` 复制为 `config.json` 填写；该文件**不进包、不进仓库** |
+| 免责 | 只给概率与客观推演，**不给买卖指令**；所有输出末尾强制风险提示，不构成投资建议 |
+
+> 完整上架流程（认证 → 过审资产 → 收款签约 → 定价 → 发布 → 结算）见 `references/publishing.md`。
+> 研究流程可复用，alpha 全在**风控纪律、板块资金接力判定与回测口径的干净程度**。
 
 ---
 

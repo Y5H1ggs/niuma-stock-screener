@@ -37,6 +37,13 @@ ds_ths.py — 同花顺（thsdk）数据源，**纯标准库**封装（可选增
      **只并列展示，禁止交叉相加或互相校验后断言某一方错**（P5）。
   3. `members()` 返回**全量成分**，含北交所 USTM920xxx（P101 同族）。
      权限过滤交给调用方按 cfg.allowed_prefixes 做，底层不替他筛。
+
+**★ 云端 / 上架版行为（优化 #2）**：
+  - 设环境变量 `THS_DISABLE=1` 即**完全关闭**本模块：不探测解释器、不开子进程、
+    **不打印任何噪声、不抛异常**；`available()` 返回 `(False, 原因)`，
+    `call()` 及所有高层函数返回 `None`，主流程按「—」展示即可。
+  - 未设该变量但环境无 thsdk 时同样是安静降级（探测走 `capture_output`，不污染 stdout）。
+  - 结论：**付费版不需要 thsdk 也能跑全链路**；增强源只是锦上添花，不是运行前提。
   4. 研报 `time` 字段只有 MM-DD 无年份，`published_at` 恒为无效占位已清成 None；
      `rating_change` 是原始编码（如 "2,维持"），**别直接当评级文字展示**。
 """
@@ -109,9 +116,19 @@ def _ensure_py():
     global _PY, _REASON
     if _PY:
         return True, _REASON
+    # ★ 优化 #2（上架/云端）：显式开关，关闭后**不 spawn 任何子进程、不打印、不报错**。
+    #   付费技能在云端沙箱里通常装不了 thsdk，没必要扫十几台解释器浪费启动时间。
+    if os.environ.get('THS_DISABLE', '').strip().lower() in ('1', 'true', 'yes', 'on'):
+        _REASON = 'THS_DISABLE=1：可选增强源已按云端配置关闭（主流程不受影响）'
+        return False, _REASON
     if not os.path.isfile(WORKER):
         _REASON = '缺少 _ths_worker.py'
         return False, _REASON
+    # ★ 当前解释器优先：若运行环境本身装了 thsdk，一次探测即命中，零扫描开销。
+    #   显式指定的 THS_PY / config.ths_python 仍由 _candidates() 排在前面。
+    if _probe(sys.executable):
+        _PY = sys.executable
+        return True, _REASON
     for p in _candidates():
         if _probe(p):
             _PY = p

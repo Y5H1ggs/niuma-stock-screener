@@ -7,11 +7,11 @@
 > `git clone` 完直接跑。同花顺是**可选增强源**，装在独立解释器里，不装不影响主流程。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.43`（2026-11-09）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.2.44`（2026-11-09）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
-## 本次增强（v1.2.42 → v1.2.43）
+## 本次增强（v1.2.42 → v1.2.44）
 
 | 能力 | 说明 |
 |---|---|
@@ -21,6 +21,7 @@
 | **上传前自查体系** | P102 新源「`ok:true` 但字段全空」· P103 缓存污染/北交所映射/`main()` 守卫回归/隐私闸门 · P104 空数据不算失败 · P105 盘前 0 只票被测却报通过 |
 | **5 个脚本补 `main()` 守卫** | 待办 #12 结清；改写前 `tokenize` 查跨行字符串，改写后 `symtable` 查作用域断裂 + 轻量 CLI 冒烟验执行路径 |
 | **发布流程** | 隐私闸门三模式（工作区 / 提交信息 / 历史）→ 暂存区结构扫描 → commit → 代理 push → `git fetch` 后等值比较 → annotated tag → Release（正文从 CHANGELOG 自动提取） |
+| **★ 上架 / 云端适配（v1.2.44）** | `ds.clist_quality()` 字段可用率下沉数据层 · `THS_DISABLE=1` 可选增强源安静降级 · **`run.py` 单条绝对路径统一入口 + `doctor` 环境体检** · SKILL.md 补齐平台元信息与云端运行条件 · **`build_package.py` 生成 0.33 MB 分层包** · **`references/publishing.md` 上架方法手册** |
 
 > ⚠️ **动态冒烟应在交易时段（09:30 后）运行**。盘前 clist 行情字段会整批返回 `'-'`，
 > 此时如实报失败是设计行为；盘前只想验代码结构请用 `python smoketest.py --static`。
@@ -158,7 +159,10 @@
 | `SKILL.md` | **主入口**：自升级与校准协议 · 基础数据录入 · 硬约束 · 执行流程 · 量化择时口径 · 输出格式 |
 | `CHANGELOG.md` | 版本沿革：每次升级的依据、改前→改后，以及「这一期为什么没改」 |
 | `config.example.json` | 个人参数模板（资金 / 权限 / 费用率 / 止损 / 风控）——复制为 `config.json` 后填写 |
-| `references/`（6 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **107 条踩坑 P5~P105** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 |
+| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **108 条踩坑 P5~P106** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
+| `scripts/run.py` | **★ 云端统一入口（v1.2.44）**：单条命令 + 绝对路径，白名单分发、`runpy` 调用、退出码透传；`python "<包内绝对路径>/scripts/run.py" doctor` 输出环境体检（含 `fields_usable`） |
+| `scripts/build_package.py` | **★ 分层打包（v1.2.44）**：生成 `dist/niuma-cloud-v<版本>.zip`；自检体积 / 必填元信息 / 私有文件；排除 CHANGELOG 与开发运维脚本，生成 `README_CLOUD.md` 说明社区版 vs 云端版 |
+| `ds.clist_quality()` | **字段可用率公共口径（v1.2.44）**：`complete`（分页完整）与 `fields_usable`（字段有值）分开报；盘前 `'-'` 占位符一眼可见（P85/P106） |
 | `scripts/cfg.py` | 个人参数加载 + 首次录入闸门（含市场档与风控参数） |
 | `scripts/ds.py` | **便携数据源库**（纯标准库）：快照 / 列表 / 资金流 / 板块 / K线三源 / 情绪 / 财务 PIT / 技术指标 / 筹码估算 / 股东结构 / 主营与 OCF 归因 |
 | `scripts/winrate_select.py` | **★ 量化胜率选股（v1.2.40，主力入口）**：`--compute` 重算形态胜率/盈亏比/凯利；`--scan` 三级漏斗；`--enrich` 补三季报与 CCC。⚠️ 结论只对固定池 + 固定持有期成立 |
@@ -199,8 +203,13 @@ python scripts/install_hooks.py --check  # 只体检，不改动
 - **Python 3.8+**；**核心链路仅用标准库**，无需 pip 安装任何包。
 - 需要能访问：`qt.gtimg.cn`、`push2*.eastmoney.com`、`money.finance.sina.com.cn`、`web.ifzq.gtimg.cn`、巨潮公告域。
 - **可选增强源**：在同花顺增强源一侧需 `pip install thsdk pandas`（约 56 MB 原生库）。
-  `ds_ths.py` 会自动探测装了 thsdk 的解释器；找不到就降级 `None`，**不影响其余模块**。
-  也可用环境变量 `THS_PY` 或 `config.json` 的 `ths_python` 显式指定。
+  `ds_ths.py` 会自动探测装了 thsdk 的解释器；找不到就**安静降级** `None`，**不影响其余模块**。
+  也可用环境变量 `THS_PY` 或 `config.json` 的 `ths_python` 显式指定；
+  云端 / 上架版可设 **`THS_DISABLE=1`** 完全关闭（零子进程、零输出）。
+- **上架 / 云端**：包体积 0.33 MB、平台元信息齐备；**脚本调用须单条命令 + 绝对路径**
+  （平台命令隔离），统一走 `run.py`。完整流程见 **[`references/publishing.md`](references/publishing.md)**。
+  > ⚠️ 能上架 ≠ 能赚钱：完整版已在 GitHub 以 MIT 免费公开；且付费资产云端网络隔离
+  > 可能影响行情接口，上架前必须跑 `run.py doctor` 验证。
 
 ---
 

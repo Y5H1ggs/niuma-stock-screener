@@ -142,8 +142,12 @@ def runtime_smoke(n=3, seed=None, codes=None):
             random.seed()
         picks = random.sample(pool, min(n, len(pool)))
     if n_bad_px:
-        print('  ⚠️ clist 行情字段 %d/%d 行为占位符（盘前降级/限流），已按 _ok() 剔除，不参与抽样'
-              % (n_bad_px, len(rows)))
+        # ★ P106：统计口径来自数据层（P85），调用方不再自己数一遍
+        _q = ds.clist_quality()
+        _f2 = (_q.get('fields') or {}).get('f2') or {}
+        print('  ⚠️ clist 行情字段 %d/%d 行为占位符（数据层 f2 有效率 %.1f%%），'
+              '已按 _ok() 剔除，不参与抽样'
+              % (n_bad_px, len(rows), 100.0 * (_f2.get('ratio') or 0)))
     if not picks:
         # ★ P105：0 只票被测 = 动态冒烟根本没执行，绝不能算通过
         faults.append('动态冒烟未执行：候选池 %d 只、抽中 0 只（clist %d 行，占位符 %d 行）'
