@@ -266,6 +266,8 @@ def _cli(argv):
         print('available:', ok, why)
         if not ok:
             return 1
+        # ★ P105 同族：check 报 FAIL 却返回 0 = 把失败算成通过。任一项不可用都必须非零退出。
+        failed = 0
         for name, fn in (('blocks', lambda: blocks(code)),
                          ('industry', lambda: industry(code)),
                          ('members', lambda: members('印制电路板')),
@@ -280,11 +282,16 @@ def _cli(argv):
                     n = v.get('n', len(v))       # flows 等无 n 键的 dict 不许再误报 None
                 elif v is None:
                     n = 'FAIL: %s' % (LAST_ERROR or 'unknown')
+                    failed += 1
                 else:
                     n = 1
                 print('  %-9s -> %s' % (name, n))
             except Exception as e:
                 print('  %-9s -> EXC %s' % (name, e))
+                failed += 1
+        if failed:
+            print('  ❌ %d 项不可用（含服务端侧失败，已降级 None）；退出码 1' % failed)
+            return 1
         return 0
     table = {'ping': lambda: status(), 'status': lambda: status(),
              'blocks': lambda: blocks(code), 'industry': lambda: industry(code),

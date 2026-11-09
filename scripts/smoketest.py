@@ -96,7 +96,8 @@ def runtime_smoke(n=3, seed=None, codes=None):
     import patterns
     import risk
 
-    faults = []
+    faults = []       # 硬失败：抛异常 / 关键数据为空 → 影响结论
+    warns = []        # 内容不可用（盘前降级、字段缺失）→ 如实提示，不阻断结论
 
     def T(tag, fn):
         t0 = time.time()
@@ -113,8 +114,17 @@ def runtime_smoke(n=3, seed=None, codes=None):
 
     rows = ds.clist(fid='f6', fs=ds.MARKET_MAIN, pages=6, fields='f12,f14,f2,f3,f6')
     pool = []
+    n_bad_px = 0
     for x in rows:
-        c, nm, px = str(x.get('f12', '')), str(x.get('f14', '')), ds._fl(x.get('f2'))
+        c, nm = str(x.get('f12', '')), str(x.get('f14', ''))
+        raw_px = x.get('f2')
+        # ★ P105：盘前/限流时 clist 的 f2/f3/f62 会整批返回 '-' 占位符，
+        #   `_fl('-') == 0.0` 会把「取数失败」静默翻成价格 0 → 候选池被清空 →
+        #   0 只票被测却报「全部通过」。**凡 _fl 前必过 _ok**（P79）。
+        if not ds._ok(raw_px):
+            n_bad_px += 1
+            continue
+        px = ds._fl(raw_px)
         if not ds.allowed(c) or 'ST' in nm.upper() or '退' in nm:
             continue
         if 2.0 <= px <= 60.0:
@@ -131,6 +141,14 @@ def runtime_smoke(n=3, seed=None, codes=None):
         else:
             random.seed()
         picks = random.sample(pool, min(n, len(pool)))
+    if n_bad_px:
+        print('  ⚠️ clist 行情字段 %d/%d 行为占位符（盘前降级/限流），已按 _ok() 剔除，不参与抽样'
+              % (n_bad_px, len(rows)))
+    if not picks:
+        # ★ P105：0 只票被测 = 动态冒烟根本没执行，绝不能算通过
+        faults.append('动态冒烟未执行：候选池 %d 只、抽中 0 只（clist %d 行，占位符 %d 行）'
+                      % (len(pool), len(rows), n_bad_px))
+        print('  ❌ 候选池为空 → 动态冒烟 0 只票被测，判定为**失败**')
     print('  %s: %s' % ('指定标的' if codes else '候选池 %d 只 → 抽中' % len(pool),
                         ', '.join('%s %s' % p for p in picks) if codes else
                         ', '.join('%s %s' % p for p in picks)))
@@ -141,6 +159,8 @@ def runtime_smoke(n=3, seed=None, codes=None):
         ok, snap, ms = T('%s/snapshot' % code, lambda: ds.snapshot([code]).get(code))
         if not ok or not snap:
             print('     snapshot ❌ %s' % snap)
+            # ★ P104：旧版这里只 print + continue，不进 faults → 结论仍报通过
+            faults.append('%s/snapshot 取数为空或抛异常（关键数据缺失）' % code)
             continue
         px = snap['price']
         print('     snapshot        ✅ %6.0fms  %.2f %+.2f%% 量比%.2f' % (ms, px, snap['chg'], snap['lb']))
@@ -148,26 +168,38 @@ def runtime_smoke(n=3, seed=None, codes=None):
         ok, r, ms = T('%s/kline' % code, lambda: ds.kline(code, 260))
         kl = r[0] if ok and r else []
         print('     kline           %s %6.0fms  %d 根(源 %s)' % ('✅' if kl else '❌', ms, len(kl), (r[1] if ok and r else '-')))
+        if not kl:
+            # ★ P104：K 线为空会让下游 indicators 静默跳过，必须算硬失败
+            faults.append('%s/kline 返回空 K 线（关键数据缺失）' % code)
 
         ok, prof, ms = T('%s/profile' % code, lambda: ds.stock_profile(code))
         print('     stock_profile   %s %6.0fms  %s / %d 概念' % (
             '✅' if ok else '❌', ms, (prof or {}).get('industry'), len((prof or {}).get('concepts') or [])))
         prof = prof or {}
+        if not prof.get('industry'):
+            warns.append('%s/stock_profile 无行业（内容不可用）' % code)
 
         ok, r, ms = T('%s/ulist' % code, lambda: ds.ulist([code]).get(code))
         print('     ulist           %s %6.0fms  f62=%s' % ('✅' if ok else '❌', ms, (r or {}).get('f62') if ok else r))
+        if not ok or not r or (r or {}).get('f62') is None:
+            warns.append('%s/ulist 主力净额缺失' % code)
 
         ok, r, ms = T('%s/fflow' % code, lambda: ds.fflow(code, klt=1))
         print('     fflow           %s %6.0fms  %d 条' % ('✅' if ok else '❌', ms, len(r) if ok else 0))
+        if not ok or not r:
+            warns.append('%s/fflow 分时资金流为空' % code)
 
         ok, fin, ms = T('%s/financials' % code, lambda: ds.financials(code))
         print('     financials      %s %6.0fms  %d 期' % ('✅' if ok else '❌', ms, len(fin) if ok else 0))
+        if not ok or not fin:
+            warns.append('%s/financials 财报期数为空' % code)
 
         ok, mb, ms = T('%s/main_business' % code, lambda: ds.main_business(code))
         if ok and isinstance(mb, dict):
             print('     main_business   ✅ %6.0fms  dict, by_product %d 条' % (ms, len(mb.get('by_product') or [])))
         else:
             print('     main_business   ⚠️ %6.0fms  返回 %s（契约应为 dict：date/by_product/by_industry/by_region）' % (ms, type(mb).__name__))
+            warns.append('%s/main_business 返回 %s（契约应为 dict）' % (code, type(mb).__name__))
 
         if kl:
             def _ind():
@@ -215,7 +247,7 @@ def runtime_smoke(n=3, seed=None, codes=None):
         print('     risk.check      %s %6.0fms  allow=%-5s 建议%5d股  ← %s' % (
             '✅' if ok else '❌', ms, rr.get('allow'), rr.get('suggest_shares', 0), why[:64]))
 
-    return faults
+    return faults, warns
 
 
 def main():
@@ -232,13 +264,20 @@ def main():
             codes = [x.strip() for x in sys.argv[i + 1].split(',') if x.strip()]
 
     bad = static_scan()
-    faults = [] if '--static' in sys.argv else runtime_smoke(n, seed, codes)
+    if '--static' in sys.argv:
+        faults, warns = [], []
+    else:
+        faults, warns = runtime_smoke(n, seed, codes)
 
     print()
     print('=' * 96)
     print('【结论】')
     print('=' * 96)
-    if bad == 0 and not faults:
+    # ★ P105：用户要求「空数据一律算失败」—— warns 不再只是提示，直接纳入失败判据。
+    #   边界：接口层空数据 = 失败；predict/patterns 的「样本不足」是统计常态，
+    #   仍按原逻辑标注「概率不予展示」，不计入失败（否则随机票冒烟将永远失败）。
+    failed = bool(bad or faults or warns)
+    if not failed:
         if '--static' in sys.argv:
             # ★ P103：旧文案在 --static 下也写「静态 + 动态全部通过」，
             #   但动态冒烟被跳过 →把「没跑」算成「通过」，属判据失效族（P56/P69）。
@@ -252,9 +291,17 @@ def main():
             print('  ❌ 静态 %d 项失败' % bad)
         for f in faults:
             print('  ❌ %s' % f)
+        for w in warns:
+            print('  ❌ 空数据/内容不可用: %s' % w)
+        print('  ❌ 结论：**失败**（%d 项硬失败 + %d 项空数据）' % (len(faults), len(warns)))
+        print('  ⚠️ 常见成因：盘前/非交易时段 clist 行情字段为 "-" 占位符、当日分时资金流尚未生成、')
+        print('     接口限流、或个股缺少对应财报。')
+        print('  ⚠️ **动态冒烟应在交易时段（09:30 后）运行**；盘前如实报失败即预期行为，')
+        print('     盘前只想验代码结构请用 --static。')
     print('  ⚠️ 冒烟只验证"不崩溃 + 结构正确"，不验证"数字正确"。')
     print('     数字正确性要用 verify.py（双源比对）与 factors.py 的自证关系（如主力=大单+超大单）。')
+    return 1 if failed else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())     # ★ P105：失败必须让 CI / 调用方看得见（旧版永远 exit 0）
