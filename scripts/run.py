@@ -31,6 +31,7 @@ if HERE not in sys.path:
 COMMANDS = {
     # 体检 / 自检
     'health': 'health.py', 'selfcheck': 'selfcheck.py', 'smoketest': 'smoketest.py',
+    'review': 'market_review.py',
     'ths': 'ds_ths.py', 'verify': 'verify.py',
     # 主链路
     'mood': 'mood.py', 'scan': 'scan_pool.py', 'sector': 'sector_compare.py',

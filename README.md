@@ -7,11 +7,11 @@
 > `git clone` 完直接跑。同花顺是**可选增强源**，装在独立解释器里，不装不影响主流程。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.44`（2026-11-09）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.2.45`（2026-11-09）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
-## 本次增强（v1.2.42 → v1.2.44）
+## 本次增强（v1.2.42 → v1.2.45）
 
 | 能力 | 说明 |
 |---|---|
@@ -46,6 +46,7 @@
 | 12 | **校准闭环** | 台账 append-only + `calibrate.py`：胜率归因、漏单重建、Brier 校准。**样本 <30 笔不许调参** |
 | 13 | **四层自检** | `health.py` 接口体检与结论置信度 · `selfcheck.py` 17 项内部恒等断言 · `smoketest.py` 静态 + 动态冒烟 · `verify.py` 双源比对 |
 | 14 | **同花顺可选增强源** | 见「本次增强」；`ds_ths.py` 纯标准库桥，不装 thsdk 也不影响其他模块 |
+| 15 | **★ 量化复盘与明日概率（v1.2.45）** | `market_review.py` 两段式：一次拉全市场 5202 只 + 四大指数 300 根 + 1026 板块落盘，之后本地反复分析。含涨跌分档/分位数、**净额≠广度**（P107）、条件基准率与分段稳定性、台账动态校准。概率为**描述性条件频率 + 方向性收缩**，非模型输出 |
 
 ---
 
@@ -159,7 +160,8 @@
 | `SKILL.md` | **主入口**：自升级与校准协议 · 基础数据录入 · 硬约束 · 执行流程 · 量化择时口径 · 输出格式 |
 | `CHANGELOG.md` | 版本沿革：每次升级的依据、改前→改后，以及「这一期为什么没改」 |
 | `config.example.json` | 个人参数模板（资金 / 权限 / 费用率 / 止损 / 风控）——复制为 `config.json` 后填写 |
-| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **108 条踩坑 P5~P106** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
+| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **109 条踩坑 P5~P107** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
+| `scripts/market_review.py` | **★ 量化复盘（v1.2.45）**：`--fetch` / `--analyze` / `--scenarios` / `--all`；缓存 `_market_review.json` 不进仓库；接入 `run.py review` |
 | `scripts/run.py` | **★ 云端统一入口（v1.2.44）**：单条命令 + 绝对路径，白名单分发、`runpy` 调用、退出码透传；`python "<包内绝对路径>/scripts/run.py" doctor` 输出环境体检（含 `fields_usable`） |
 | `scripts/build_package.py` | **★ 分层打包（v1.2.44）**：生成 `dist/niuma-cloud-v<版本>.zip`；自检体积 / 必填元信息 / 私有文件；排除 CHANGELOG 与开发运维脚本，生成 `README_CLOUD.md` 说明社区版 vs 云端版 |
 | `ds.clist_quality()` | **字段可用率公共口径（v1.2.44）**：`complete`（分页完整）与 `fields_usable`（字段有值）分开报；盘前 `'-'` 占位符一眼可见（P85/P106） |
@@ -242,6 +244,7 @@ cd scripts
 python cfg.py
 python ds.py                          # 数据源连通自检
 python health.py --quick              # 接口可用率 + 今日结论置信度
+python market_review.py --all         # 收盘复盘：分布统计 + 条件基准率 + 明日概率
 python ds_ths.py check                # 可选：同花顺增强源六项自检（未装则自动降级）
 
 # 1) 量化胜率选股（v1.2.40 起主力入口）
