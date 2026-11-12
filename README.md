@@ -1,6 +1,6 @@
 # 选股分析牛马工具
 
-![选股分析牛马工具 · v1.2.48](docs/banner.svg)
+![选股分析牛马工具 · v1.2.49](docs/banner.svg)
 
 一个 **A 股个人研究复盘工具**：把数据源、判读铁律、量化口径、仓位纪律与自检/发布流程，
 固化成可被任何支持 `SKILL.md` 规范的 Agent 软件加载的 Skill。
@@ -9,14 +9,14 @@
 > `git clone` 完直接跑。同花顺是**可选增强源**，装在独立解释器里，不装不影响主流程。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.48`（2026-11-12）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.2.49`（2026-11-12）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 **两种获取方式**
 
 | 方式 | 命令 / 入口 | 适用 |
 |---|---|---|
 | 克隆仓库 | `git clone https://github.com/Y5H1ggs/niuma-stock-screener.git` | 想要全部源码、测试与开发脚本 |
-| **下载云端包** | [`niuma-cloud-v1.2.48.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.48/niuma-cloud-v1.2.48.zip)（0.39 MB / 46 条目） | 直接上架 Skill，含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
+| **下载云端包** | [`niuma-cloud-v1.2.49.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.49/niuma-cloud-v1.2.49.zip)（0.39 MB / 46 条目） | 直接上架 Skill，含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
 
 安装后先跑自检，再跑冒烟：
 
@@ -199,7 +199,7 @@ python "<包内绝对路径>/scripts/run.py" health --quick
 | `SKILL.md` | **主入口**：自升级与校准协议 · 基础数据录入 · 硬约束 · 执行流程 · 量化择时口径 · 输出格式 |
 | `CHANGELOG.md` | 版本沿革：每次升级的依据、改前→改后，以及「这一期为什么没改」 |
 | `config.example.json` | 个人参数模板（资金 / 权限 / 费用率 / 止损 / 风控）——复制为 `config.json` 后填写 |
-| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **116 条踩坑 P5~P114** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
+| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **117 条踩坑 P5~P115** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
 | `scripts/prob.py` | **★★ 先分布后概率（v1.2.46 · v1.2.47 加 β 与多周期）**：`build_dist(bars, conds, beta_bars=...)` 按日期去重合并 → 分布 → 阈值概率同源读出（单调性抛错）；`all_horizons()` 1/3/5 日并列；`decision_tree()` 分叉点 + 加权回等边际；`ev()` 扣费净期望；`--record` 自动写台账。⚠️ **决策用中位数不用均值**；β 字段可直接进条件 |
 | `tests/` | **单元测试（v1.2.47）**：29 用例全离线，`python run.py test` |
 | `ds.board_kline()` / `ds.board_stage()` | **板块 K 线（v1.2.47）**：`90.BKxxxx` secid；板块自身 RSI / MA5/20/60 / 60 日位置 / 多空头。缓存 key 含 n（漏过 → 序列静默缩水）。⚠️ 连续调用留 gap≈0.6s |
