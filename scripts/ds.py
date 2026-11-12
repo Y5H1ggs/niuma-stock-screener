@@ -447,9 +447,141 @@ def ulist(codes, fields='f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87'
 
 
 # ---------------------------------------------------------------- 4. 资金流时序（东财 fflow）
-def fflow(code, klt=1, lmt=0, is_sector=False):
+def board_name(bk, use_index=True):
+    """反查板块代码的**真实名称**。返回 str 或 None（取不到一律 None，**不返回 ''**）。
+
+    ⚠️ 为什么必须有（P108，2026-11-12 实景）：
+      报告里把"电力设备"写成 `BK0475`，实际 **`BK0475` = 银行Ⅱ**，
+      于是「电力设备主力净额 −51 亿」整段数据其实是**银行**的。
+      更糟的是它**不报错、数字自洽、看起来完全正常**——
+      银行板块确实每天都有几十亿净流出，所以没有任何一个数字会显得可疑。
+      同族：`BK1307`=电机Ⅲ、`BK1030`=电机Ⅱ、`BK1200`=电力设备——
+      **名称相近的代码毫无规律，凭记忆写必错。**
+
+    ★ 解析成功的名称**进程内永久缓存**：板块名称是静态的，不会变。
+      否则每次校验都要联网，push2 一抖动整条降级链就把校验全部"跳过"，
+      等于没校验（实测：连续调用时 board_index 残页 + 单查询被限流，
+      正确代码 `BK1200` 也会被误判为「取不到」）。
+    """
+    global _BOARD_NAME_CACHE
+    if not bk:
+        return None
+    bk = str(bk).upper()
+    if not bk.startswith('BK'):
+        bk = 'BK' + bk.zfill(4)
+    if bk in _BOARD_NAME_CACHE:
+        return _BOARD_NAME_CACHE[bk]
+    if use_index:
+        try:
+            idx = board_index()
+            hit = (idx.get('by_bk') or {}).get(bk)
+            if hit:
+                _BOARD_NAME_CACHE[bk] = hit[0]
+                return hit[0]
+        except Exception:
+            pass
+    url = ('https://push2.eastmoney.com/api/qt/stock/get?secid=90.%s&fields=f57,f58&ut=%s'
+           % (bk, UT))
+    r = get(url)
+    if not r:
+        return None
+    try:
+        nm = ((json.loads(r).get('data') or {}).get('f58') or '').strip()
+        if nm:
+            _BOARD_NAME_CACHE[bk] = nm
+            return nm
+        return None
+    except Exception:
+        return None
+
+
+def resolve_board(kw, limit=8):
+    """按关键词模糊反查板块 → `[(bk, name, kind)]`，按匹配质量排序。
+
+    ⚠️ 只应从 `board_index()` 拿；索引不完整时返回空列表，
+    **不要用「猜一个代码」来兜底**（那正是 P108 的成因）。
+    """
+    if not kw:
+        return []
+    kw = str(kw).strip()
+    try:
+        idx = board_index()
+    except Exception:
+        return []
+    out = []
+    for name, val in (idx.get('by_name') or {}).items():
+        if not name:
+            continue
+        if name == kw:
+            out.append((0, val[0], name, val[1]))
+        elif kw in name:
+            out.append((1, val[0], name, val[1]))
+        elif name in kw:
+            out.append((2, val[0], name, val[1]))
+    out.sort(key=lambda z: (z[0], len(z[2])))
+    return [(bk, name, kind) for _, bk, name, kind in out[:limit]]
+
+
+def board_check(bk, expect):
+    """校验板块代码是否指向 `expect`（子串匹配）。返回 dict，**不抛异常**。
+
+    返回 {'bk','name','expect','ok','msg','unverifiable','degraded'}
+      ok=True          → 名称包含 expect
+      ok=False         → 明确不符，**报告里必须标红或直接弃用该数据**
+      name=None        → 取不到名称。此时还要看 `degraded`：
+        · degraded=True  → 板块索引已降级到 datacenter 体系（申万风格 128 行业），
+                            **该体系可能压根没有这个板块**（实测没有「电力设备」，
+                            只有「电力」BK0428）→ 这是**体系差异，不等于代码写错**，
+                            标 `unverifiable=True`，须待 push2 恢复后复核
+        · degraded=False → 纯接口失败，同样 unverifiable
+      **两种"取不到"都不得当成"代码正确"放行**（P77：故障作用域要分清）。
+    """
+    nm = board_name(bk)
+    exp = str(expect or '').strip()
+    meta = {}
+    try:
+        meta = board_index().get('meta') or {}
+    except Exception:
+        pass
+    degraded = bool(meta.get('src') == 'dce' or meta.get('blocked'))
+    if nm is None:
+        if degraded:
+            msg = ('板块名称取不到：当前板块索引已降级到 %s 体系（%d 行业 / %d 概念），'
+                   '该体系可能不含此板块 —— **这是体系差异，不等于代码写错**；'
+                   '校验无法完成，须待 push2 恢复后复核' % (
+                       meta.get('src') or '未知', meta.get('dce_industry') or 0,
+                       meta.get('dce_concept') or 0))
+        else:
+            msg = '板块名称取不到（接口失败）→ 校验无法完成，不得当作"代码正确"'
+        return {'bk': bk, 'name': None, 'expect': exp, 'ok': False,
+                'unverifiable': True, 'degraded': degraded, 'msg': msg}
+    if not exp:
+        return {'bk': bk, 'name': nm, 'expect': '', 'ok': True,
+                'unverifiable': False, 'degraded': degraded,
+                'msg': '仅反查：%s = %s' % (bk, nm)}
+    ok = exp in nm or nm in exp
+    return {'bk': bk, 'name': nm, 'expect': exp, 'ok': ok,
+            'unverifiable': False, 'degraded': degraded,
+            'msg': ('✓ %s = %s' % (bk, nm)) if ok else
+                   '✗ %s 实为「%s」，不是「%s」→ **该数据不可用，须改用正确代码**' % (bk, nm, exp)}
+
+
+def fflow(code, klt=1, lmt=0, is_sector=False, expect=None):
     """⚠️⚠️ klt=1 的 f52 是【从开盘累计】的主力净额，不是每分钟增量！禁止累加。
-    返回 [(时间, 主力净额累计, 小单, 中单, 大单, 超大单), ...]"""
+    返回 [(时间, 主力净额累计, 小单, 中单, 大单, 超大单), ...]
+
+    expect: 仅 `is_sector=True` 时生效。传板块中文名（如 `'电力设备'`）会先校验代码。
+      **代码不符时抛 ValueError，不返回空列表** —— 因为「错板块的数据」比「没数据」
+      危险得多：它不报错、数字自洽、看起来完全正常（P108）。
+      校验本身失败（接口取不到名称）时**不拦**，只打警告——不能把网络问题当配置错误。
+    """
+    if is_sector and expect:
+        chk = board_check(code, expect)
+        if chk['unverifiable']:
+            import sys as _sys
+            print('[ds.fflow] ⚠️ %s 校验未完成：%s' % (code, chk['msg']), file=_sys.stderr)
+        elif not chk['ok']:
+            raise ValueError('[ds.fflow] %s' % chk['msg'])
     sec = ('90.' + code) if is_sector else secid(code)
     url = (f'https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?secid={sec}'
            f'&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56&klt={klt}&lmt={lmt}&ut={UT}')
@@ -585,6 +717,7 @@ def stock_profile(code):
 _BOARD_IDX = {}
 _BOARD_IDX_TS = 0.0
 _BOARD_IDX_SOFT = False
+_BOARD_NAME_CACHE = {}          # {bk: 名称} —— 板块名称静态不变，解析成功即永久缓存
 
 
 def main_business(code, n=6):
@@ -1062,6 +1195,49 @@ def cashflow_attribution(code, periods=8):
             judged = 'reversed'      # 符号反转，需要警惕
     return {'rows': rows, 'yoy': yoy, 'rhythm': rhythm, 'judged': judged,
             'ap_gt_ar': (cur['ap'] or 0) > (cur['ar'] or 0)}
+
+
+def members_usable(rows, fields=('f3',)):
+    """判定成分股列表**字段是否真有值**（条数正常 ≠ 可用）。
+
+    ⚠️ 为什么必须有（P110，2026-11-12 实景）：
+      `sector_members('BK1030')` 收盘后返回 **27 条**，条数与盘中完全一致，
+      但 `f2/f3/f62` **整批是 None**（降级到 datacenter 名单，只有代码和名称）。
+      若调用方只看 `len(rows)==27` 就当真，会算出「板块涨幅中位数 = 0%」
+      「红盘 0 只」这种**看起来正常、实际全是假**的结论。
+      → **"取全了没"要按字段校验，不能按条数校验。**
+
+    返回 {'n','usable':{字段: 有值条数}, 'rate':{字段: 0~1}, 'ok':bool, 'src','msg'}
+      ok 的判据：**每个必需字段的可用率都 ≥ 0.5**（不是"至少一个字段有值"）。
+    """
+    rows = list(rows or [])
+    n = len(rows)
+    usable, rate = {}, {}
+    for f in fields:
+        c = 0
+        for r in rows:
+            v = r.get(f) if isinstance(r, dict) else None
+            if v is None or v == '' or v == '-':
+                continue
+            if isinstance(v, str):
+                try:
+                    float(v)
+                except Exception:
+                    continue
+            c += 1
+        usable[f] = c
+        rate[f] = (c/n) if n else 0.0
+    src = next((r.get('_src') for r in rows if isinstance(r, dict) and r.get('_src')), None)
+    ok = bool(n) and all(rate[f] >= 0.5 for f in fields)
+    if not n:
+        msg = '空列表（取数失败，不是"该板块没有成分股"）'
+    elif ok:
+        msg = '可用：%d 条，字段可用率 %s' % (n, ', '.join('%s %.0f%%' % (f, 100*rate[f]) for f in fields))
+    else:
+        msg = ('**不可用**：返回 %d 条但字段有值率 %s（src=%s）→ '
+               '不得用于行情/资金统计，须改用其他口径' % (
+                   n, ', '.join('%s %.0f%%' % (f, 100*rate[f]) for f in fields), src or '?'))
+    return {'n': n, 'usable': usable, 'rate': rate, 'ok': ok, 'src': src, 'msg': msg}
 
 
 def sector_stats(bk, fallback=True, pre=False):

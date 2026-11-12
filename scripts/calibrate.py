@@ -151,11 +151,14 @@ def report_forecasts():
     checks = [
         ('open_up', '开盘上涨', lambda a: a['open'] > 0),
         ('close_up', '收盘上涨', lambda a: a['close'] > 0),
-        ('high_ge1', '盘中曾涨≥1%', lambda a: a['high'] >= 1.0),
-        ('high_ge2', '盘中曾涨≥2%', lambda a: a['high'] >= 2.0),
-        ('low_le1', '盘中曾跌≤-1%', lambda a: a['low'] <= -1.0),
-        ('break3', '盘中跌破-3%', lambda a: a['low'] <= -3.0),
+        ('high_ge1', '盘中最高曾涨≥1%', lambda a: a['high'] >= 1.0),
+        ('high_ge2', '盘中最高曾涨≥2%', lambda a: a['high'] >= 2.0),
+        ('low_le1', '盘中最低曾跌≤−1%', lambda a: a['low'] <= -1.0),
+        ('break3', '盘中最低跌破−3%', lambda a: a['low'] <= -3.0),
     ]
+    print('  ⚠️ 口径：`open_up`/`close_up` 是**收盘口径**；`high_*`/`low_le1`/`break3` '
+          '一律是**盘中极值口径**（用当日最高/最低），不是收盘涨跌幅。')
+    print('     实测同一形态下「盘中跌破−3%」25% vs「收盘跌破−3%」9%，**差 16pp，混用即错**。')
     print('  %-14s %6s %10s %10s %10s' % ('事件', '样本', '平均预测', '实际频率', '偏差'))
     for key, label, fn in checks:
         sub = [f for f in fs if key in f['probs']]
@@ -168,7 +171,7 @@ def report_forecasts():
     bs = [f['brier'] for f in fs if f['brier'] is not None]
     if bs:
         print('\n  平均 Brier 分数 %.4f（0 最好 / 0.25 相当于瞎猜 50%% / 1 最差）' % (sum(bs) / len(bs)))
-        print('  参考：对二元事件给恒定 50%% 的 Brier = 0.25；低于 0.25 才算提供了信息。')
+        print('  参考：对二元事件给恒定 50% 的 Brier = 0.25；低于 0.25 才算提供了信息。')
     print('\n  明细：')
     for f in fs[-12:]:
         a = f['actual']
@@ -214,7 +217,18 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'all'
     if cmd in ('settle', 'all'):
         n = settle_all()
-        print('已结算预测 %d 条\n' % n)
+        # ⚠️ 这个 n 是【本次新增结算数】，不是台账累计已结算数。
+        # 2026-11-12 实测：台账里明明有 5 条已结算，这里却打印「已结算预测 0 条」，
+        # 差点被读成「台账是空的、之前全都没结算」。必须把两个数分开写清楚。
+        try:
+            _all = journal._load(journal.P_FORECASTS, [])
+            _done = sum(1 for f in _all if f.get('settle_date') and f.get('actual'))
+        except Exception:
+            _all, _done = [], 0
+        print('本次新增结算 %d 条（台账累计：已结算 %d / 共 %d 条）\n'
+              % (n, _done, len(_all)))
+        if _done and not n:
+            print('  ↑ 本次没有新的到期项。要看校准明细请跑 `python calibrate.py forecasts`。\n')
     if cmd in ('trades', 'all'):
         report_trades()
         print()

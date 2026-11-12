@@ -7,14 +7,17 @@
 > `git clone` 完直接跑。同花顺是**可选增强源**，装在独立解释器里，不装不影响主流程。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.45`（2026-11-09）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.2.46`（2026-11-12）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
-## 本次增强（v1.2.42 → v1.2.45）
+## 本次增强（v1.2.43 → v1.2.46）
 
 | 能力 | 说明 |
 |---|---|
+| **★ 概率必须「先分布、后概率」（v1.2.46）** | 新增 `prob.py`：条件样本**按日期去重合并** → 构造次日收益分布 → **所有阈值概率从同一分布读出**（单调性由构造保证，违反直接抛错）。修的是 P109 实景：曾同时给「站上 MA5 10.02」45–55% 与「跌破 MA10 9.96」50–62%，而 **10.02>9.96，站上更高门槛概率不可能更大** —— 根因是六组基准率各自独立估计、彼此无约束。配套：`decision_tree()` 找分叉点并校验「四格加权 == 边际」、`ev()` 给扣费后净期望、**决策用中位数不用均值** |
+| **★ 板块代码必须反查（v1.2.46）** | `ds.board_name / resolve_board / board_check`，`fflow(is_sector=True, expect='电力设备')` 代码不符时**抛异常而非返回空**。修的是 P108：`BK0475` 被当成电力设备，实际是**银行Ⅱ**，整段资金数据全错、连续两版报告都错、且不报错、数字自洽、交叉验算发现不了 |
+| **★ 报告产物验收（v1.2.46）** | 新增 `check_html.py`：`HTMLParser` 全栈标签配对 + 按标签逐个计数 + 表格列数一致 + 脱敏硬/软两档。修的是 P111：`card()` 漏 `</div>` 而 `count('<section')==count('</section>')` **照样通过**；另修 `count('<th')` 把 `<thead>` 数进去导致对正确报告误报 |
 | **同花顺可选增强源** | `ds_ths.py`（纯标准库子进程桥）+ `_ths_worker.py`（只在装了 thsdk 的解释器跑）。补上一直拿不到的：**权威板块归属与成分**（根治板块代码凭记忆写错）、**券商研报**（东财恒为 0 篇）、**主动/被动资金 16 字段拆分**、**第 4 路前复权日 K**。依赖隔离、失败一律降级 `None`；与东财口径**不同源 → 只并列、禁交叉相加**（P5/P102）。自检 `python ds_ths.py check` |
 | **认证结论纠正** | `thsdk.auth()` **免扫码**（临时账号）；旧结论「3.0 必须扫码」是忘了先调 `auth()` 的误判 |
 | **空数据一律判失败** | `smoketest.py`：`_fl` 前必过 `_ok()`、**空候选池判硬失败**、接口层空数据纳入失败判据、**失败返回非零退出码**。盘前跑会如实报失败（预期行为，见 P105） |
@@ -47,6 +50,7 @@
 | 13 | **四层自检** | `health.py` 接口体检与结论置信度 · `selfcheck.py` 17 项内部恒等断言 · `smoketest.py` 静态 + 动态冒烟 · `verify.py` 双源比对 |
 | 14 | **同花顺可选增强源** | 见「本次增强」；`ds_ths.py` 纯标准库桥，不装 thsdk 也不影响其他模块 |
 | 15 | **★ 量化复盘与明日概率（v1.2.45）** | `market_review.py` 两段式：一次拉全市场 5202 只 + 四大指数 300 根 + 1026 板块落盘，之后本地反复分析。含涨跌分档/分位数、**净额≠广度**（P107）、条件基准率与分段稳定性、台账动态校准。概率为**描述性条件频率 + 方向性收缩**，非模型输出 |
+| 16 | **★ 概率自洽 + 代码校验 + 产物验收（v1.2.46）** | `prob.py` 先分布后概率（单调性抛错断言）· `check_html.py` 全栈结构验收 · `ds.board_check` 三态校验（ok / unverifiable / degraded）· `ds.members_usable` 字段有值率判定 · 修 P108/P109/P110/P111 |
 
 ---
 
@@ -160,7 +164,9 @@
 | `SKILL.md` | **主入口**：自升级与校准协议 · 基础数据录入 · 硬约束 · 执行流程 · 量化择时口径 · 输出格式 |
 | `CHANGELOG.md` | 版本沿革：每次升级的依据、改前→改后，以及「这一期为什么没改」 |
 | `config.example.json` | 个人参数模板（资金 / 权限 / 费用率 / 止损 / 风控）——复制为 `config.json` 后填写 |
-| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **109 条踩坑 P5~P107** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
+| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **113 条踩坑 P5~P111** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
+| `scripts/prob.py` | **★ 先分布后概率（v1.2.46）**：`build_dist()` 条件样本按日期去重合并 → `threshold_probs()` 所有阈值同源读出（内置单调性抛错）→ `decision_tree()` 分叉点 + 加权回等边际校验 → `ev()` 扣费净期望。⚠️ 决策**用中位数不用均值** |
+| `scripts/check_html.py` | **★ 报告验收（v1.2.46）**：全栈标签配对（非数子串）+ 按标签逐个开闭计数 + 表格列数 + 脱敏硬/软两档（`--strict` 对外）；退出码 0/1/2 |
 | `scripts/market_review.py` | **★ 量化复盘（v1.2.45）**：`--fetch` / `--analyze` / `--scenarios` / `--all`；缓存 `_market_review.json` 不进仓库；接入 `run.py review` |
 | `scripts/run.py` | **★ 云端统一入口（v1.2.44）**：单条命令 + 绝对路径，白名单分发、`runpy` 调用、退出码透传；`python "<包内绝对路径>/scripts/run.py" doctor` 输出环境体检（含 `fields_usable`） |
 | `scripts/build_package.py` | **★ 分层打包（v1.2.44）**：生成 `dist/niuma-cloud-v<版本>.zip`；自检体积 / 必填元信息 / 私有文件；排除 CHANGELOG 与开发运维脚本，生成 `README_CLOUD.md` 说明社区版 vs 云端版 |
