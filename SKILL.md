@@ -4,7 +4,7 @@ display_name: 选股分析牛马工具
 display_name_en: A-Share Research Workbench
 description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、107 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
 description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
-version: 1.2.47
+version: 1.2.48
 license: MIT
 agent_created: true
 ---
@@ -14,7 +14,7 @@ agent_created: true
 > **核心链路零依赖**（纯 Python 标准库）的 A 股研究工作流：
 > **量化胜率 → 板块接力 → 形态回测 → 评级 → 卡片式 HTML 报告**。
 >
-> ★ **v1.2.40 起交易模式已重构**：波段 / 修复为主、**凯利仓位 + 2~3 只分散**，满仓单吊已废弃。
+> ★ **交易模式**：波段 / 修复为主、**凯利仓位 + 2~3 只分散**、单笔 ≤33%。
 > 下文历史章节里出现的「隔日超短 / 强势口径 / 连板基因」**只作形态描述，不再代表期望**
 > （146,028 条面板实测这些口径为负期望，见 §1.0 与 CHANGELOG v1.2.40）。
 
@@ -101,7 +101,7 @@ python scripts/risk.py status     # ③ 账户是否处于回撤熔断期
 | `stop_loss_pct` | | `-4.0` | 止损纪律（%）。超短模式的生死线，**执行规则见 §2.5.3** |
 | `take_profit_pct` | | `2.0` | 兑现目标（%），**执行规则见 §2.5.4** |
 | `exclude_st` | | `true` | 是否剔除 ST / 退市风险股 |
-| `position_mode` | | **`kelly`** | `kelly`＝按凯利公式定仓位（**推荐**）｜`equal`＝等权分散｜`single`＝全仓单吊（**已废弃**，见 §2.1） |
+| `position_mode` | | **`kelly`** | `kelly`＝按凯利公式定仓位（**推荐**）｜`equal`＝等权分散。**单只押满的模式已从代码删除** |
 | `kelly_fraction` | | `0.5` | 凯利折减系数：0.5＝半凯利（实务）｜1.0＝全凯利（激进） |
 | `max_single_pct` | | `0.33` | 单笔仓位上限，受「一手 100 股」约束时的妥协值 |
 | `max_positions` | | `3` | 最多同时持有几只（胜率优势薄 → 靠分散降方差） |
@@ -129,7 +129,7 @@ python scripts/risk.py status     # ③ 账户是否处于回撤熔断期
 | # | 约束 | 说明 |
 |---|---|---|
 | 1 | **只做你权限内的板块** | 由 `allowed_prefixes` 决定；默认沪深主板 `60/000/001/002/003` |
-| 2 | **仓位模式 = 凯利（硬约束）** | 单笔仓位 = **min(半凯利 8.2%, `max_single_pct` 33%)**；同时持有 2~3 只；**禁止满仓单吊**（满仓是凯利的 6.1 倍下注＝超额下注，长期必然爆仓，实测依据见 §2.1） |
+| 2 | **仓位模式 = 凯利（硬约束）** | 单笔仓位 = **min(半凯利 8.2%, `max_single_pct` 33%)**；同时持有 2~3 只；**凯利 ≤ 0 则不下注**（实测依据见 §2.1） |
 | 3 | **3 板及以上默认不接力** | 连板高位票只观察不推荐（这一条是策略纪律，不随资金变化） |
 | 4 | **板块内资金接力偏好必查** | 候选票必须有同板块当日横向对比（成分涨幅 + 主力净额排名 + 涨幅中位数），脱离板块者显式标高风险 |
 | 5 | **禁止绝对化表述** | 所有情景、触发条件、决策树分支必须附概率（单值或区间）；≥50% 或排序首位标 🔴高概率。无概率标注的情景表视为不合格输出 |
@@ -265,9 +265,10 @@ python scripts/winrate_select.py --scan --cash <你的可用资金> --top 6 --en
 
 ---
 
-## 2.1 量化仓位：凯利公式（★ 废除满仓单吊的依据）
+## 2.1 量化仓位：凯利公式
 
-> v1.2.40 起 `position_mode` 默认 **`kelly`**，`single`（全仓单吊）**已废弃**。
+> `position_mode` 默认 **`kelly`**。仓位由凯利公式算，不是「有多少现金买多少」。
+> **`f* ≤ 0` 时不下注**——这不是失败，是凯利给出的结论。
 
 **实测参数**（最优形态 N=13,631，5 日持有）：
 
@@ -287,8 +288,6 @@ f* = (p×b − q) / b = 0.163  →  全凯利 16.3%
 半凯利（实务，抗估计误差）= 8.2%
 ```
 
-**→ 满仓 100% ＝ 凯利的 6.1 倍下注（超额下注），长期必然爆仓。**
-
 **仓位规则（硬约束）**：
 
 | 规则 | 值 |
@@ -296,10 +295,10 @@ f* = (p×b − q) / b = 0.163  →  全凯利 16.3%
 | 单笔目标仓位 | **min(半凯利 8.2%, `max_single_pct` 33%)** |
 | 同时持有 | **2~3 只**（`max_positions`） |
 | 一手约束妥协 | `权益 × 8.2%` 往往**不足一手（100 股）** → 单笔实际会被抬到 **10%~30%**（仍受 33% 封顶）；**用「多标的分散」降方差，不许靠加杠杆或放大单笔来凑收益** |
-| 禁止 | **满仓单吊、单笔 >33%、同时持有 >3 只** |
+| 禁止 | **单笔 >33%、同时持有 >3 只、不设止损** |
 
 **为什么必须分散**：胜率优势只有 **+5.8pp**，而最差单笔 **−31.30%**。
-一笔尾部亏损需要 **8 次**平均盈利（+3.84%）才能补回。**单吊 = 把 5.8pp 的微弱优势暴露在 31% 的尾部风险下。**
+一笔尾部亏损需要 **8 次**平均盈利（+3.84%）才能补回。**把单笔仓位压到 8% 量级，是让这 31% 的尾部风险只伤到账户的 2.5%，而不是全部。**
 
 ## 2.5 持仓处置与卖出 SOP（★ T+1 的另一半）
 

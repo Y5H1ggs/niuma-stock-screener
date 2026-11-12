@@ -1,6 +1,6 @@
 # 选股分析牛马工具
 
-![选股分析牛马工具 · v1.2.47](docs/banner.svg)
+![选股分析牛马工具 · v1.2.48](docs/banner.svg)
 
 一个 **A 股个人研究复盘工具**：把数据源、判读铁律、量化口径、仓位纪律与自检/发布流程，
 固化成可被任何支持 `SKILL.md` 规范的 Agent 软件加载的 Skill。
@@ -9,14 +9,14 @@
 > `git clone` 完直接跑。同花顺是**可选增强源**，装在独立解释器里，不装不影响主流程。
 
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
-**当前版本**：`v1.2.47`（2026-11-12）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本**：`v1.2.48`（2026-11-12）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 **两种获取方式**
 
 | 方式 | 命令 / 入口 | 适用 |
 |---|---|---|
 | 克隆仓库 | `git clone https://github.com/Y5H1ggs/niuma-stock-screener.git` | 想要全部源码、测试与开发脚本 |
-| **下载云端包** | [`niuma-cloud-v1.2.47.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.47/niuma-cloud-v1.2.47.zip)（0.39 MB / 46 条目） | 直接上架 Skill，含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
+| **下载云端包** | [`niuma-cloud-v1.2.48.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.48/niuma-cloud-v1.2.48.zip)（0.39 MB / 46 条目） | 直接上架 Skill，含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
 
 安装后先跑自检，再跑冒烟：
 
@@ -28,7 +28,7 @@ python "<包内绝对路径>/scripts/run.py" health --quick
 
 ---
 
-## 本次增强（v1.2.43 → v1.2.47）
+## 本次增强（v1.2.43 → v1.2.48）
 
 ![接入板块 β 前后结论变化](docs/prob-compare.svg)
 
@@ -38,6 +38,7 @@ python "<包内绝对路径>/scripts/run.py" health --quick
 
 | 能力 | 说明 |
 |---|---|
+| **★★ 彻底移除「满仓押单只」（v1.2.48）** | 排查发现是**文档写凯利、代码算满仓**的双轨：`config.json` 的 `position_mode` 实际值仍是 `single` 且四个仓位参数全缺；`risk.py` 的仓位是 `min(cash, max_amt)`，**从未读过 `kelly_fraction` / `max_single_pct`**。已三层同时修：配置强制迁移（读到 `single` 告警并降级）+ 仓位改凯利公式 + 新增 G5 持仓数上限。**同一命令改前给「全仓」，现给「建议仓位 8.1%」** |
 | **★★ 概率接入板块 β（v1.2.47）** | `prob.py` v2：`build_dist(bars, conds, beta_bars=...)` 注入 `bk_chg / bk_r1 / bk_pos60 / bk_ma_up / bk_rsi6`，**条件可直接写 `bk_chg<=-3`**。接入后结论变了：板块单日跌≥3% 时个股次日收涨 **55.0%**（个股自身条件只有 48.6%），但标差 **5.10% vs 2.72%**；且同一批样本次日 48.6%（近随机）而 **3 日 62.9%** —— **只看次日会误判「这形态没用」**（P113） |
 | **★ 数据源用透：secid 规则修复（v1.2.47）** | `secid('sh000001')` 曾返回 `0.sh000001`、`secid('BK1030')` 返回 `0.BK1030`，全是错前缀 → 指数分钟线 **0 根**、板块 K 线 **0 根**，被误记为「源不支持」。修成按前缀映射后：指数分钟线 **240 根**、板块日线 **260 根**。新增 `ds.board_kline` / `ds.board_stage`（板块自身 RSI/均线/60日位置）——**这个视角此前完全缺失**（P112） |
 | **★ 多周期 + 自动落账（v1.2.47）** | `r3/r5/hi3/lo3/hi5/lo5` + `--horizon 1/3/5` + `all_horizons()` 并列；`--record` 自动写预测台账（带 beta/conds 元信息）。条件引用缺失字段时**计数提示**，不静默吞 |
@@ -64,7 +65,7 @@ python "<包内绝对路径>/scripts/run.py" health --quick
 |---|---|---|
 | 1 | **核心链路零依赖** | 纯标准库，不装 pip 包即可跑全链路；可选增强源装在独立解释器 |
 | 2 | **只给概率，不给指令** | 「禁止绝对化表述、所有情景带概率、≥50% 标高概率」是 `SKILL.md` 的硬约束；输出候选池 + 情景概率，**不下买入信号** |
-| 3 | **量化胜率 + 凯利仓位** | v1.2.40 起主力入口 `winrate_select.py`：146,028 条面板实测最优形态 **52.8% vs 基准 47.0%**；半凯利 8.2%、2~3 只分散、单笔 ≤33%。**满仓单吊已废弃**（凯利的 6.1 倍下注） |
+| 3 | **量化胜率 + 凯利仓位** | v1.2.40 起主力入口 `winrate_select.py`：146,028 条面板实测最优形态 **52.8% vs 基准 47.0%**；半凯利 8.2%、2~3 只分散、单笔 ≤33% |
 | 4 | **多源降级链 + 不静默出错** | 东财 / 腾讯 / 新浪 / 巨潮互为备份；**`_fl` 前必过 `_ok()`**，`'-'` 占位符不会被读成 0；空数据判失败并在报告打「数据完整度」警示 |
 | 5 | **判读铁律固化** | 板块内资金接力偏好必查、连板梯队真实 streak 扫描、竞价三段式校准、主营构成先校验 |
 | 6 | **一键出报告 + 脱敏导出** | `report.py` 产出卡片式 HTML（抬头指标格 + 四维评级 + 本期点评 + 逐条加减分理由 + 5 张 SVG 图）；`--anon` 生成不含账户口径的版本，`--pdf` 用本机 Chrome 导出 |
@@ -88,7 +89,7 @@ python "<包内绝对路径>/scripts/run.py" health --quick
 
 - 做 A 股 **波段 / 修复**为主的研究复盘，需要一套可复用流程；
 - **只做主板**、没有创业板/科创板权限（默认按 `config.json` 的 `allowed_prefixes` 过滤）；
-- **不再满仓单吊** —— 默认 `position_mode=kelly`，按实测胜率/盈亏比算仓位，同时持有 2~3 只；
+- **仓位按凯利算** —— 默认 `position_mode=kelly`，按实测胜率/盈亏比定仓位，同时持有 2~3 只；
 - 想用 Agent 当研究助理，但**不想被喂结论**——要的是数据和概率；
 - 想学 A 股判读方法：`references/` 下 6 份文档可脱离代码独立当手册读。
 
@@ -143,7 +144,7 @@ python "<包内绝对路径>/scripts/run.py" health --quick
 | 项 | 旧 | 新 | 依据 |
 |---|---|---|---|
 | 选股口径 | 追强势 / 放量 / 连板基因 | **低成交额 + 缩量 + 低位 + 站上 MA20** | 面板实测：旧口径 45.8%、`量比>2` 42.2%、追高 41.2%；新口径 **52.8%**（基准 47.0%） |
-| 仓位模式 | 满仓单吊 100% | **凯利：半凯利 8.2%，2~3 只，单笔 ≤33%** | p=0.528、b=1.293 → 全凯利 16.3%；满仓是凯利的 6.1 倍下注 |
+| 仓位模式 | 单笔 100% | **凯利：半凯利 8.2%，2~3 只，单笔 ≤33%** | p=0.528、b=1.293 → 全凯利 16.3% |
 | 新增入口 | 无 | `winrate_select.py`（`--compute` / `--scan` / `--enrich`） | 胜率、凯利、漏斗三者同源 |
 
 ### P1 · 结论可信度（除标 ✅ 者均为 ⏳ 待做）
@@ -198,7 +199,7 @@ python "<包内绝对路径>/scripts/run.py" health --quick
 | `SKILL.md` | **主入口**：自升级与校准协议 · 基础数据录入 · 硬约束 · 执行流程 · 量化择时口径 · 输出格式 |
 | `CHANGELOG.md` | 版本沿革：每次升级的依据、改前→改后，以及「这一期为什么没改」 |
 | `config.example.json` | 个人参数模板（资金 / 权限 / 费用率 / 止损 / 风控）——复制为 `config.json` 后填写 |
-| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **115 条踩坑 P5~P113** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
+| `references/`（7 份） | `datasources` 接口与量纲对照 · `playbook` 判读铁律 · `backtest` 回测方法论 · `pitfalls` **116 条踩坑 P5~P114** · `calibration` 调参裁判规则 · `factor_research` 因子研究负结果 · **`publishing` 上架方法手册** |
 | `scripts/prob.py` | **★★ 先分布后概率（v1.2.46 · v1.2.47 加 β 与多周期）**：`build_dist(bars, conds, beta_bars=...)` 按日期去重合并 → 分布 → 阈值概率同源读出（单调性抛错）；`all_horizons()` 1/3/5 日并列；`decision_tree()` 分叉点 + 加权回等边际；`ev()` 扣费净期望；`--record` 自动写台账。⚠️ **决策用中位数不用均值**；β 字段可直接进条件 |
 | `tests/` | **单元测试（v1.2.47）**：29 用例全离线，`python run.py test` |
 | `ds.board_kline()` / `ds.board_stage()` | **板块 K 线（v1.2.47）**：`90.BKxxxx` secid；板块自身 RSI / MA5/20/60 / 60 日位置 / 多空头。缓存 key 含 n（漏过 → 序列静默缩水）。⚠️ 连续调用留 gap≈0.6s |
@@ -340,7 +341,7 @@ python model.py --pool _pool_main.txt --max-px 15   # ⚠️ 未通过检验，�
 ## 五、内置硬约束
 
 1. **只做权限内板块**：由 `config.json` 的 `allowed_prefixes` 决定（默认沪深主板 60/000/001/002/003）
-2. **仓位模式 = 凯利（`kelly`）**：单笔 `min(半凯利 8.2%, max_single_pct 33%)`，同时持有 2~3 只，**禁止满仓单吊**
+2. **仓位模式 = 凯利（`kelly`）**：单笔 `min(半凯利 8.2%, max_single_pct 33%)`，同时持有 2~3 只，**凯利 ≤0 则不下注**
 3. **3 板及以上默认不接力**
 4. **板块内资金接力偏好必查**（同板块横向对比，脱离板块须标高危）
 5. **禁止绝对化表述**：所有情景带概率，≥50% 标高概率

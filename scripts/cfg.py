@@ -11,6 +11,7 @@ cfg.py — 用户基础数据配置（脱敏核心）
   cfg.require()     —— 严格模式，入口脚本调用：没配好就打印录入指引并退出
 """
 import os
+import sys
 import json
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,10 +30,13 @@ DEFAULTS = {
     'fee_rate_roundtrip': None,                     # 旧版粗略比例口径（仅旧配置生效）
     'stop_loss_pct': -4.0,                          # 你的止损纪律（负值，%）
     'take_profit_pct': 2.0,                         # 兑现目标（%）
-    # ★ v1.2.40：仓位模式默认改为 kelly（量化胜率优先 + 分散）。
-    #   依据：最优形态实测 p=0.528、b=1.29 → 全凯利 16.3%、半凯利 8.2%。
-    #   **满仓 single = 凯利的 6.1 倍下注（超额下注），长期必然爆仓，已禁止作为默认。**
-    'position_mode': 'kelly',                       # single | equal | kelly（推荐）
+    # ★ 仓位：凯利公式 + 分散（v1.2.40 起；v1.2.48 起 `single` 模式彻底移除）
+    #   依据：最优形态实测 p=0.528、b=1.293 → 全凯利 16.3%、半凯利 8.2%。
+    #   ⚠️ 旧版曾用「全仓押一只」，实测那等于凯利的 6.1 倍下注（超额下注），
+    #      单笔尾部亏损要 8 次平均盈利才能补回 → **已从代码里删除该模式，不再作为可选项**。
+    'position_mode': 'kelly',                       # kelly（默认） | equal
+    'kelly_p': 0.528,                               # 胜率（来自 winrate_select 实测，换池必重算）
+    'kelly_b': 1.293,                               # 盈亏比（平均盈利 / 平均亏损）
     'kelly_fraction': 0.5,                          # 半凯利
     'max_single_pct': 0.33,                         # 单笔上限（一手约束下的妥协）
     'max_positions': 3,                             # 最多同时持有几只
@@ -40,10 +44,14 @@ DEFAULTS = {
     # ---- 账户级风控（README P0-2）----
     'max_drawdown_pct': 15.0,                       # 已实现回撤达到该值 → 触发熔断（暂停开仓）
     'halt_days': 5,                                 # 熔断后暂停开仓的自然日数
-    'risk_per_trade_pct': 5.0,                      # 单笔最大亏损占权益上限（%）——决定仓位上限
+    'risk_per_trade_pct': 5.0,                      # 单笔最大亏损占权益上限（%）——仓位的**上限**约束之一
     'max_same_sector_streak': 1,                     # 连续同行业开仓上限（1 = 禁止连续同行业）
     'market': 'cn_main',                            # 市场档（P2-9 多市场适配），见 MARKETS
 }
+
+# 已移除的仓位模式 → 迁移目标。**不静默接受旧值**：读到就报警并强制切换。
+DEPRECATED_POSITION_MODES = {'single': 'kelly'}
+
 
 # 市场档（README P2-9）：把硬约束做成可配置项，换市场只改这里
 MARKETS = {
@@ -117,6 +125,20 @@ def _read():
                         data[k] = v
         except Exception as e:
             raise SystemExit(f'config.json 读取失败（{e}）。请检查是否为合法 JSON（注意逗号/引号）。')
+    # ★ v1.2.48：旧仓位模式迁移。读到已废弃的 single **不静默接受**——
+    #   它会让人以为"满仓押一只"仍是合法配置，实际该模式已被删除。
+    pm = data.get('position_mode')
+    if pm in DEPRECATED_POSITION_MODES:
+        tgt = DEPRECATED_POSITION_MODES[pm]
+        print('[cfg] ⚠️ config.json 的 position_mode=%r 已废弃（满仓押单只 ≈ 凯利的 6 倍下注）'
+              '→ 本次强制按 %r 运行。请把 config.json 改为 %r，并补上 '
+              'max_single_pct / max_positions / kelly_p / kelly_b。' % (pm, tgt, tgt),
+              file=sys.stderr)
+        data['position_mode'] = tgt
+    elif pm not in ('kelly', 'equal'):
+        print('[cfg] ⚠️ 未知 position_mode=%r → 回落 kelly（合法值：kelly / equal）' % (pm,),
+              file=sys.stderr)
+        data['position_mode'] = 'kelly'
     _cache = data
     return data
 

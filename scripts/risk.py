@@ -2,9 +2,12 @@
 """risk.py — 账户级风控闸门（README 路线图 P0-2）
 
 为什么需要它：
-  全仓单吊模式下，「单笔纪律」（-4% 止损）不足以控制**账户级**风险 ——
-  连续三笔同行业票，遇到行业系统性走弱时三笔一起亏。止损只把**每笔**的亏损限定住，
-  账户的**回撤路径**仍然可以是一条直线向下。账户级风控解决的就是这个。
+  「单笔纪律」（-4% 止损）只约束**单笔**亏损，不约束**账户**回撤路径 ——
+  连续几笔同行业票，遇到行业系统性走弱时会一起亏，
+  账户权益仍然可以是一条直线向下。账户级风控解决的就是这个。
+
+仓位口径（v1.2.48 起）：**凯利公式 + 分散**，并且「凯利为负就不下注」是合法结论。
+旧版曾按「现金全额」下单（等价于满仓押单只 ≈ 凯利的 6 倍下注），已删除该算法。
 
 四道闸门（全部机械判据，无主观成分）：
   G1 回撤熔断   已实现回撤 ≥ max_drawdown_pct → 禁止开仓，直到 halt_days 之后
@@ -148,7 +151,7 @@ def check(code, cash=None, stop_pct=None):
         last_bucket = cap_bucket(_mktcap(last['code']))
         streak = int(cfg.get('max_same_sector_streak', 1))
         if streak >= 1 and sector == last_sector and sector != '未知':
-            reasons.append('G2 行业敞口：上一笔 %s(%s) 同属「%s」，全仓单吊下等于连续押同一条线 → 拒绝'
+            reasons.append('G2 行业敞口：上一笔 %s(%s) 同属「%s」，连续押同一条线会放大行业系统性风险 → 拒绝'
                            % (last['name'], last['code'], sector))
             return {'code': code, 'name': s['name'], 'allow': False, 'level': 'reject',
                     'reasons': reasons, 'suggest_shares': 0, 'suggest_cost': 0,
@@ -166,11 +169,37 @@ def check(code, cash=None, stop_pct=None):
         reasons.append('G4 风险预算：止损 %.0f%% 下，单笔最大亏损须 ≤ 权益 %.0f%%（%.0f 元）→ 买入额上限 %.0f 元'
                        % (sp, risk_pct, max_loss, max_amt))
 
-    # ---- 仓位
-    lot = int(cfg.market().get('lot') or 100)
-    budget = min(snapshot['cash'], max_amt)
+    # ---- G5 持仓数上限（此前完全没查：可以无限制开新仓）
+    max_pos = int(cfg.get('max_positions', 3))
+    held_n = len(snapshot['positions'])
+    if held_n >= max_pos:
+        reasons.append('G5 持仓数：已持有 %d 只，达上限 %d 只 → 先减仓再开新仓'
+                       % (held_n, max_pos))
+        return {'code': code, 'name': s['name'], 'allow': False, 'level': 'reject',
+                'reasons': reasons, 'suggest_shares': 0, 'suggest_cost': 0,
+                'equity': equity, 'price': price, 'sector': sector, 'cap': bucket}
+
+    # ---- G6 仓位：凯利公式（半凯利 + 单笔上限）
+    #   f* = (p·b − (1−p)) / b；f* ≤ 0 时**不下注**，这是合法且常见的结论。
+    p_win = float(cfg.get('kelly_p', 0.528))
+    b_odd = float(cfg.get('kelly_b', 1.293))
+    k_frac = float(cfg.get('kelly_fraction', 0.5))
+    cap_pct = float(cfg.get('max_single_pct', 0.33))
+    f_full = (p_win*b_odd - (1-p_win)) / b_odd if b_odd > 0 else 0.0
+    if f_full <= 0:
+        reasons.append('G6 凯利：p=%.3f、b=%.3f → 期望收益 ≤ 0 → **不下注**'
+                       '（这不是失败，是凯利给出的结论）' % (p_win, b_odd))
+        return {'code': code, 'name': s['name'], 'allow': False, 'level': 'reject',
+                'reasons': reasons, 'suggest_shares': 0, 'suggest_cost': 0,
+                'equity': equity, 'price': price, 'sector': sector, 'cap': bucket}
+    f_half = f_full * k_frac
+    target_pct = min(f_half, cap_pct)
     if level == 'half':
-        budget *= 0.5
+        target_pct *= 0.5
+    target_amt = equity * target_pct
+
+    lot = int(cfg.market().get('lot') or 100)
+    budget = min(snapshot['cash'], max_amt, target_amt)
     shares = int(budget / price / lot) * lot if price > 0 else 0
     if shares <= 0:
         need = price * lot
@@ -191,6 +220,10 @@ def check(code, cash=None, stop_pct=None):
         'equity': round(equity, 2), 'cash': round(snapshot['cash'], 2),
         'price': price, 'sector': sector, 'cap': bucket,
         'dd_cur': snapshot['dd_cur'],
+        'target_pct': target_pct,
+        'kelly': {'p': p_win, 'b': b_odd, 'full_pct': f_full,
+                  'half_pct': f_half, 'cap_pct': cap_pct,
+                  'capped': f_half > cap_pct},
     }
 
 
@@ -209,6 +242,12 @@ def status():
     print('  连续同行业上限 %d 笔 | 单笔风险预算 %.1f%% 权益 | 市场档 %s' % (
         int(cfg.get('max_same_sector_streak', 1)), float(cfg.get('risk_per_trade_pct', 5.0)),
         cfg.market()['name']))
+    _p, _b = float(cfg.get('kelly_p', .528)), float(cfg.get('kelly_b', 1.293))
+    _f = (_p*_b - (1-_p))/_b if _b else 0
+    print('  仓位模式   %s | 半凯利 %.1f%% | 单笔上限 %.0f%% | 最多 %d 只（当前 %d 只）' % (
+        cfg.get('position_mode'), _f*float(cfg.get('kelly_fraction', .5))*100,
+        float(cfg.get('max_single_pct', .33))*100,
+        int(cfg.get('max_positions', 3)), len(pf['positions'])))
     last = _last_trade(pf['trades'])
     if last:
         print('  最近一笔   %s %s（%s）' % (last['buy_date'], last['name'], last['code']))
@@ -230,7 +269,10 @@ if __name__ == '__main__':
         for x in r['reasons']:
             print('  ·', x)
         if r['allow']:
-            print('  → 结论：允许开仓（%s）' % ('全仓' if r['level'] == 'full' else '半仓'))
+            print('  → 结论：允许开仓 | **建议仓位 %.1f%%**（半凯利 %.1f%%，单笔上限 %.0f%%）%s' % (
+                r.get('target_pct', 0)*100, r.get('kelly', {}).get('half_pct', 0)*100,
+                r.get('kelly', {}).get('cap_pct', 0.33)*100,
+                '（市值档降档）' if r['level'] == 'half' else ''))
             print('  → 建议 %d 股，约 %.2f 元 | 保本 %.3f | 止损 %.3f' % (
                 r['suggest_shares'], r['suggest_cost'], r['break_even'], r['stop_price']))
         else:
