@@ -90,6 +90,23 @@ def doctor():
     return 0
 
 
+def run_tests():
+    """跑 `tests/` 下的单元测试（**全离线**，用合成数据，不联网）。
+
+    为什么单独给一个子命令：`prob.py` 的两个核心断言都曾经自己写错过
+    （单调性方向反、EV 的 N 显示成 1），而这类「校验器自己出错」靠看输出很难发现。
+    """
+    import unittest
+    root = os.path.dirname(HERE)
+    tests_dir = os.path.join(root, 'tests')
+    if not os.path.isdir(tests_dir):
+        print('tests/ 目录不存在（打包版可能未附带）')
+        return 2
+    suite = unittest.TestLoader().discover(tests_dir)
+    res = unittest.TextTestRunner(verbosity=1).run(suite)
+    return 0 if res.wasSuccessful() else 1
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in ('-h', '--help', 'help'):
@@ -98,11 +115,14 @@ def main(argv=None):
         for k in sorted(COMMANDS):
             print('  %-14s -> %s' % (k, COMMANDS[k]))
         print('  %-14s -> 云端环境体检' % 'doctor')
+        print('  %-14s -> 单元测试（离线）' % 'test')
         return 0
 
     cmd = argv[0]
     if cmd == 'doctor':
         return doctor()
+    if cmd == 'test':
+        return run_tests()
     if cmd not in COMMANDS:
         print('未知子命令: %s（用 --help 查看可用项）' % cmd)
         return 2

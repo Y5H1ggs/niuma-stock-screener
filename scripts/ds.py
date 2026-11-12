@@ -143,9 +143,32 @@ def allowed(code):
 
 
 def secid(code):
-    """东财 secid 前缀：沪 1. / 深 0. """
-    c = str(code)
-    return ('1.' if c.startswith('6') else '0.') + c
+    """东财 secid：沪 `1.` / 深 `0.` / **板块 `90.BKxxxx`** / **指数按 sh|sz 前缀判定**。
+
+    ⚠️ P112（v1.2.47 修）：旧实现是 `('1.' if c.startswith('6') else '0.') + c`，
+    对 `'sh000001'` 会返回 **`'0.sh000001'`** —— 错误前缀 → `kline_em` 返回 **0 根**。
+    表现为「指数分钟线取不到」，但真正的原因在这里，不在接口。
+    **凡是"某个源对某类标的返 0 根"，先怀疑 secid/sym 规则，而不是"该源不支持"。**
+
+    正确映射：
+      `sh000001` → `1.000001` ｜ `sz399001` → `0.399001` ｜
+      `BK1030` → `90.BK1030` ｜ `600000` → `1.600000` ｜ `002249` → `0.002249`
+    """
+    c = str(code).strip()
+    if not c:
+        return c
+    if c.startswith('90.') or c[:2] in ('1.', '0.'):
+        return c                       # 已带前缀，原样返回
+    if c.upper().startswith('BK'):
+        return '90.' + c.upper()       # 板块
+    p, body = c[:2], c[2:]
+    if p == 'sh':
+        return '1.' + body
+    if p == 'sz':
+        return '0.' + body
+    if p == 'bj':
+        return '0.' + body             # 北交所沿用 0.（与裸码分支一致）
+    return ('1.' if c.startswith(('6', '9')) else '0.') + c
 
 
 def tsym(code):
@@ -522,8 +545,8 @@ def resolve_board(kw, limit=8):
     return [(bk, name, kind) for _, bk, name, kind in out[:limit]]
 
 
-def board_check(bk, expect):
-    """校验板块代码是否指向 `expect`（子串匹配）。返回 dict，**不抛异常**。
+def board_check(bk, expect=None):
+    """校验板块代码是否指向 `expect`（子串匹配）。**`expect` 省略时只做反查**。返回 dict，不抛异常。
 
     返回 {'bk','name','expect','ok','msg','unverifiable','degraded'}
       ok=True          → 名称包含 expect
@@ -718,6 +741,7 @@ _BOARD_IDX = {}
 _BOARD_IDX_TS = 0.0
 _BOARD_IDX_SOFT = False
 _BOARD_NAME_CACHE = {}          # {bk: 名称} —— 板块名称静态不变，解析成功即永久缓存
+_BK_KLINE_CACHE = {}            # {(bk,klt,fqt): (ts, bars)} —— 板块 K 线，日线 600s / 分时 60s
 
 
 def main_business(code, n=6):
@@ -1466,6 +1490,108 @@ def board_flow_dc(kind='concept', date=None, pz=600):
                     'mid': _fl(r.get('MIDDEAL_NET')) / 1e8,
                     'small': _fl(r.get('SMALLDEAL_NET')) / 1e8})
     return out
+
+
+def board_kline(bk, n=260, klt=101, fqt=1, use_cache=True):
+    """板块**历史 K 线**。返回 `[{d,o,c,h,l,v}]`，失败一律 `[]`（不返回 None）。
+
+    ⚠️ 为什么需要（P113，v1.2.47）：
+      2026-11-12 的复盘证明该股当日跌幅 **100% 由板块 β 解释**——
+      成分股中位 −3.28% / 板块指数 −3.31% / 个股 −3.28% → **alpha 仅 +0.03pp**。
+      但当时的概率模型只读个股 K 线，`conds` 里**根本没有板块字段**，
+      所以算出的「次日收涨 48.9%」是在**不知道板块处于什么位置**的前提下算的，
+      而那个前提恰恰是最重要的信息（跌 3.3% 的板块 vs 跌 0.5% 的板块，个股次日分布不同）。
+
+      此前一直以为「板块历史取不到」（`kline_list('BK1030')` 返 0 根），
+      **实际是 secid 规则问题**：板块要用 `90.BKxxxx`，见 `secid()` 的 P112 说明。
+
+    与 `kline_list` 的区别：本函数不做跨源降级（新浪/腾讯没有板块 K 线），
+    失败就是失败——**宁可没有，不要拿别的板块的曲线冒充**。
+
+    参数：`klt` 101=日 60=60分 30=30分 15=15分 5=5分 1=1分。
+    缓存：日线 600s / 分时 60s（板块历史日内不变，避免反复打接口）。
+    ⚠️ 缓存 key **必须含 n** —— 否则先用 `n=30` 再要 `n=120` 会拿到那 30 根，
+       `board_stage` 的 60 日位置就会静默变成「不可用」（P84 同族：序列不足缩窗口）。
+    """
+    if not bk:
+        return []
+    bku = str(bk).upper()
+    if not bku.startswith('BK'):
+        bku = 'BK' + bku.zfill(4)
+    key = (bku, klt, fqt, n)
+    ttl = 600 if klt >= 60 else 60
+    if use_cache:
+        hit = _BK_KLINE_CACHE.get(key)
+        if hit and (time.time() - hit[0]) < ttl:
+            return hit[1]
+    url = (f'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=90.{bku}'
+           f'&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56'
+           f'&klt={klt}&fqt={fqt}&end=20500101&lmt={n}&ut={UT}')
+    r = get(url, tries=2)
+    if not r:
+        return []
+    try:
+        ks = (json.loads(r).get('data') or {}).get('klines') or []
+        bars = [{'d': p[0], 'o': _fl(p[1]), 'c': _fl(p[2]), 'h': _fl(p[3]),
+                 'l': _fl(p[4]), 'v': _fl(p[5])} for p in (x.split(',') for x in ks)]
+        bars = [b for b in bars if b['c'] > 0]
+        if bars:
+            _BK_KLINE_CACHE[key] = (time.time(), bars)
+        return bars
+    except Exception:
+        return []
+
+
+def board_stage(bk, n=120):
+    """板块**所处阶段**（用的是板块自身 K 线，不是个股）。
+
+    返回 {'ok','name','price','chg','rsi6','ma5','ma20','ma60','pos60','trend','msg'}
+      trend ∈ {'多头','空头','纠缠'}（MA5>MA20>MA60 / 反之 / 其他）
+      pos60 = 收盘在 60 日高低区间的位置 %（不足 60 根返 None）
+
+    ⚠️ 不足 n 根时 `pos60` 为 **None 而不是缩窗口**（P84：`h[-n:]` 在序列不足时
+       会静默退化成"全部可用"，把 130 日当 250 日用）。
+    """
+    bars = board_kline(bk, n=max(n, 70), klt=101)
+    if len(bars) < 20:
+        # ⚠️ 连续请求同一接口会被限流（实测连打 4 个板块，后两个返 0 根，
+        #    单独重测全部正常）。这里做**一次**短间隔重试，仍失败才判不可用。
+        #    不要在此处加重试循环——push2 全族阻断时重试无用且有害（P75）。
+        time.sleep(0.6)
+        bars = board_kline(bk, n=max(n, 70), klt=101, use_cache=False)
+    if len(bars) < 20:
+        return {'ok': False, 'bk': bk, 'name': board_name(bk, use_index=False),
+                'msg': '板块 K 线不足 20 根（限流或新板块）—— 连续调用请留 gap≈0.6s'}
+    c = [b['c'] for b in bars]
+    ma5, ma20 = ma(c, 5), ma(c, 20)
+    ma60 = ma(c, 60) if len(c) >= 60 else None
+    hi = [b['h'] for b in bars]
+    lo = [b['l'] for b in bars]
+    pos60 = None
+    if len(bars) >= 60:
+        h60, l60 = max(hi[-60:]), min(lo[-60:])
+        pos60 = (c[-1]-l60)/(h60-l60)*100 if h60 > l60 else None
+    if ma60 and ma5 > ma20 > ma60:
+        trend = '多头'
+    elif ma60 and ma5 < ma20 < ma60:
+        trend = '空头'
+    else:
+        trend = '纠缠'
+    # ⚠️ 名称必须走**单次轻查询**（use_index=False）：
+    #    board_name 默认会先查 board_index()，那是 8 页 × 2 类板块的全量拉取，
+    #    实测在 board_stage 里触发它会把随后的板块 K 线请求挤成 0 根（限流）。
+    #    名称只是展示用，不值得为它牺牲核心数据。
+    nm = board_name(bk, use_index=False)
+    return {
+        'ok': True, 'name': nm, 'bk': bk,
+        'price': c[-1], 'chg': (c[-1]/c[-2]-1)*100 if len(c) >= 2 else None,
+        'rsi6': rsi(c, 6), 'ma5': ma5, 'ma20': ma20, 'ma60': ma60,
+        'pos60': pos60, 'trend': trend, 'n': len(bars),
+        'msg': '%s 收 %.2f（%+.2f%%）MA5 %.2f/MA20 %.2f，60日位置 %s，%s' % (
+            nm or bk, c[-1],
+            (c[-1]/c[-2]-1)*100 if len(c) >= 2 else 0, ma5, ma20,
+            ('%.0f%%' % pos60) if pos60 is not None else '不可用', trend),
+    }
 
 
 def board_of(code, pz=40):
