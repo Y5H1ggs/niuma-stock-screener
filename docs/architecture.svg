@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 620" width="1120" height="620" role="img" aria-label="选股分析牛马工具 架构与数据流">
+  <defs>
+    <linearGradient id="hd" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#A9843F"/>
+      <stop offset="0.5" stop-color="#E2C98F"/>
+      <stop offset="1" stop-color="#A9843F"/>
+    </linearGradient>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#12304F"/>
+      <stop offset="1" stop-color="#1A4166"/>
+    </linearGradient>
+    <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0 0 L9 4.5 L0 9 Z" fill="#A9843F"/>
+    </marker>
+  </defs>
+
+  <rect width="1120" height="620" fill="#F7F9FB"/>
+
+  <!-- 标题 -->
+  <text x="60" y="52" fill="#12304F" font-size="24" font-weight="700"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">架构与数据流</text>
+  <text x="60" y="78" fill="#6B7F92" font-size="13"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">四层解耦：取数失败只降级「取数方式」，不降业务口径</text>
+  <rect x="60" y="92" width="1000" height="2" fill="url(#hd)" opacity="0.45"/>
+
+  <!-- 第 1 层：数据源 -->
+  <text x="60" y="130" fill="#A9843F" font-size="12" font-weight="700" letter-spacing="1.6"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">① 数据源</text>
+
+  <g font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">
+    <rect x="60" y="146" width="180" height="72" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="150" y="174" fill="#12304F" font-size="13" font-weight="700" text-anchor="middle">腾讯快照</text>
+    <text x="150" y="194" fill="#6B7F92" font-size="11" text-anchor="middle">qt.gtimg.cn · gbk</text>
+    <text x="150" y="210" fill="#6B7F92" font-size="11" text-anchor="middle">实时价 / 盘口</text>
+
+    <rect x="256" y="146" width="180" height="72" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="346" y="174" fill="#12304F" font-size="13" font-weight="700" text-anchor="middle">东财 push2 / clist</text>
+    <text x="346" y="194" fill="#6B7F92" font-size="11" text-anchor="middle">全市场 / 板块 / 资金</text>
+    <text x="346" y="210" fill="#6B7F92" font-size="11" text-anchor="middle">主力 f62 · 分时 f52</text>
+
+    <rect x="452" y="146" width="180" height="72" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="542" y="174" fill="#12304F" font-size="13" font-weight="700" text-anchor="middle">新浪</text>
+    <text x="542" y="194" fill="#6B7F92" font-size="11" text-anchor="middle">日 K / MoneyFlow</text>
+    <text x="542" y="210" fill="#B0655C" font-size="11" text-anchor="middle">注：末根＝前一交易日</text>
+
+    <rect x="648" y="146" width="180" height="72" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="738" y="174" fill="#12304F" font-size="13" font-weight="700" text-anchor="middle">巨潮 / 东财报表</text>
+    <text x="738" y="194" fill="#6B7F92" font-size="11" text-anchor="middle">公告 · 三大报表</text>
+    <text x="738" y="210" fill="#6B7F92" font-size="11" text-anchor="middle">PIT 公告日闸门</text>
+
+    <rect x="844" y="146" width="216" height="72" rx="6" fill="#FFFBF1" stroke="#DCC79A"/>
+    <text x="952" y="174" fill="#8A6A2F" font-size="13" font-weight="700" text-anchor="middle">同花顺 thsdk（可选）</text>
+    <text x="952" y="194" fill="#96763A" font-size="11" text-anchor="middle">板块归属 · 研报 · 16 字段资金</text>
+    <text x="952" y="210" fill="#96763A" font-size="11" text-anchor="middle">不装不影响主流程</text>
+  </g>
+
+  <!-- 降级链 -->
+  <g font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">
+    <rect x="60" y="238" width="1000" height="44" rx="5" fill="#FBEDEC" stroke="#E6B0AA"/>
+    <text x="80" y="265" fill="#8C3A31" font-size="12" font-weight="700">降级链</text>
+    <text x="150" y="265" fill="#8C3A31" font-size="12">push2 族阻断 → datacenter → 腾讯 → 新浪（约 0.2 秒被 RST，重试无用且有害）</text>
+    <text x="880" y="265" fill="#B0655C" font-size="11">「取不到」≠「是 0」</text>
+  </g>
+
+  <line x1="560" y1="218" x2="560" y2="238" stroke="#A9843F" stroke-width="2" marker-end="url(#arw)"/>
+
+  <!-- 第 2 层：统一入口 -->
+  <g font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">
+    <rect x="60" y="302" width="1000" height="58" rx="6" fill="url(#band)"/>
+    <text x="86" y="336" fill="#E2C98F" font-size="14" font-weight="700">ds.py</text>
+    <text x="150" y="336" fill="#D6E1EC" font-size="13">统一取数层 · secid 规则 · 字段可用率 · 硬缓存 / 软缓存 TTL · 熔断</text>
+    <text x="836" y="336" fill="#8FA6BA" font-size="12">run.py 白名单分发</text>
+  </g>
+  <line x1="560" y1="282" x2="560" y2="302" stroke="#A9843F" stroke-width="2" marker-end="url(#arw)"/>
+
+  <!-- 第 3 层：能力模块 -->
+  <text x="60" y="392" fill="#A9843F" font-size="12" font-weight="700" letter-spacing="1.6"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">② 分析能力</text>
+
+  <g font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif" font-size="12">
+    <rect x="60" y="408" width="152" height="74" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="136" y="434" fill="#12304F" font-weight="700" text-anchor="middle">scan_pool</text>
+    <text x="136" y="454" fill="#6B7F92" font-size="11" text-anchor="middle">口径筛选</text>
+    <text x="136" y="470" fill="#6B7F92" font-size="11" text-anchor="middle">涨停 / 量能 / 位置</text>
+
+    <rect x="224" y="408" width="152" height="74" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="300" y="434" fill="#12304F" font-weight="700" text-anchor="middle">sector_compare</text>
+    <text x="300" y="454" fill="#6B7F92" font-size="11" text-anchor="middle">板块内接力偏好</text>
+    <text x="300" y="470" fill="#6B7F92" font-size="11" text-anchor="middle">双基准 · 一票否决</text>
+
+    <rect x="388" y="408" width="152" height="74" rx="6" fill="#F3F8F4" stroke="#A9C9B4"/>
+    <text x="464" y="434" fill="#215B3C" font-weight="700" text-anchor="middle">prob</text>
+    <text x="464" y="454" fill="#4C7A60" font-size="11" text-anchor="middle">先分布后概率</text>
+    <text x="464" y="470" fill="#4C7A60" font-size="11" text-anchor="middle">个股 + 板块 β · 1/3/5 日</text>
+
+    <rect x="552" y="408" width="152" height="74" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="628" y="434" fill="#12304F" font-weight="700" text-anchor="middle">factors / model</text>
+    <text x="628" y="454" fill="#6B7F92" font-size="11" text-anchor="middle">IC · Bonferroni</text>
+    <text x="628" y="470" fill="#6B7F92" font-size="11" text-anchor="middle">固定池才可比</text>
+
+    <rect x="716" y="408" width="152" height="74" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="792" y="434" fill="#12304F" font-weight="700" text-anchor="middle">risk</text>
+    <text x="792" y="454" fill="#6B7F92" font-size="11" text-anchor="middle">半凯利仓位</text>
+    <text x="792" y="470" fill="#6B7F92" font-size="11" text-anchor="middle">回撤熔断 · 敞口</text>
+
+    <rect x="880" y="408" width="180" height="74" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="970" y="434" fill="#12304F" font-weight="700" text-anchor="middle">journal / calibrate</text>
+    <text x="970" y="454" fill="#6B7F92" font-size="11" text-anchor="middle">预测落账 → 到期结算</text>
+    <text x="970" y="470" fill="#6B7F92" font-size="11" text-anchor="middle">Brier · 偏差方向</text>
+  </g>
+  <line x1="560" y1="360" x2="560" y2="392" stroke="#A9843F" stroke-width="2" marker-end="url(#arw)"/>
+
+  <!-- 第 4 层：输出与自检 -->
+  <text x="60" y="518" fill="#A9843F" font-size="12" font-weight="700" letter-spacing="1.6"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">③ 输出与自检</text>
+
+  <g font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif" font-size="12">
+    <rect x="60" y="534" width="238" height="62" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="179" y="558" fill="#12304F" font-weight="700" text-anchor="middle">HTML 卡片报告</text>
+    <text x="179" y="578" fill="#6B7F92" font-size="11" text-anchor="middle">check_html 结构 + 脱敏验收</text>
+
+    <rect x="314" y="534" width="238" height="62" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="433" y="558" fill="#12304F" font-weight="700" text-anchor="middle">预测台账</text>
+    <text x="433" y="578" fill="#6B7F92" font-size="11" text-anchor="middle">五事件概率 · 到期自动结算</text>
+
+    <rect x="568" y="534" width="238" height="62" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="687" y="558" fill="#12304F" font-weight="700" text-anchor="middle">四级自检</text>
+    <text x="687" y="578" fill="#6B7F92" font-size="11" text-anchor="middle">selfcheck · smoketest · verify · run.py test</text>
+
+    <rect x="822" y="534" width="238" height="62" rx="6" fill="#FFFFFF" stroke="#D8E2EA"/>
+    <text x="941" y="558" fill="#12304F" font-weight="700" text-anchor="middle">隐私闸门</text>
+    <text x="941" y="578" fill="#6B7F92" font-size="11" text-anchor="middle">28 条禁词 · 硬/软两档</text>
+  </g>
+
+  <rect x="0" y="617" width="1120" height="3" fill="url(#hd)" opacity="0.6"/>
+</svg>

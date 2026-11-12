@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="选股分析牛马工具 v1.2.47">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0E2439"/>
+      <stop offset="0.55" stop-color="#12304F"/>
+      <stop offset="1" stop-color="#1A4166"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#A9843F"/>
+      <stop offset="0.5" stop-color="#E2C98F"/>
+      <stop offset="1" stop-color="#A9843F"/>
+    </linearGradient>
+    <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C9A961" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#C9A961" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0 H0 V40" fill="none" stroke="#FFFFFF" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#bg)"/>
+  <rect width="1200" height="300" fill="url(#grid)"/>
+
+  <!-- 背景行情曲线（装饰，低透明度） -->
+  <path d="M0 232 L70 224 L120 236 L170 206 L225 214 L280 182 L330 196 L385 168 L435 178 L490 150 L545 162 L600 128 L655 146 L710 112 L765 126 L820 96 L875 110 L930 78 L985 92 L1040 62 L1100 76 L1200 44"
+        fill="none" stroke="#C9A961" stroke-opacity="0.30" stroke-width="2"/>
+  <path d="M0 232 L70 224 L120 236 L170 206 L225 214 L280 182 L330 196 L385 168 L435 178 L490 150 L545 162 L600 128 L655 146 L710 112 L765 126 L820 96 L875 110 L930 78 L985 92 L1040 62 L1100 76 L1200 44 L1200 300 L0 300 Z"
+        fill="url(#area)"/>
+
+  <!-- 左侧标题区 -->
+  <rect x="64" y="66" width="46" height="3" fill="url(#gold)"/>
+  <text x="64" y="60" fill="#C9A961" font-size="13" font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif"
+        letter-spacing="3.2">A-SHARE RESEARCH TOOLKIT · v1.2.47</text>
+
+  <text x="64" y="132" fill="#FFFFFF" font-size="46" font-weight="700"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">选股分析牛马工具</text>
+
+  <text x="64" y="172" fill="#B9C7D6" font-size="16"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">把数据源、判读铁律、量化口径、仓位纪律与自检发布流程，固化成可加载的 Skill</text>
+
+  <text x="64" y="200" fill="#7E93A8" font-size="14"
+        font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">纯标准库 · 零第三方依赖 · 四级自检 · 预测落账与校准闭环</text>
+
+  <!-- 右侧三组数字 -->
+  <g font-family="-apple-system,'Segoe UI','Microsoft YaHei',sans-serif">
+    <text x="836" y="132" fill="#E2C98F" font-size="42" font-weight="700" text-anchor="middle">115</text>
+    <text x="836" y="160" fill="#7E93A8" font-size="13" text-anchor="middle">踩坑条目</text>
+    <text x="836" y="180" fill="#7E93A8" font-size="12" text-anchor="middle">P5 – P113</text>
+
+    <text x="964" y="132" fill="#E2C98F" font-size="42" font-weight="700" text-anchor="middle">29</text>
+    <text x="964" y="160" fill="#7E93A8" font-size="13" text-anchor="middle">离线测试</text>
+    <text x="964" y="180" fill="#7E93A8" font-size="12" text-anchor="middle">0.1 秒跑完</text>
+
+    <text x="1092" y="132" fill="#E2C98F" font-size="42" font-weight="700" text-anchor="middle">0</text>
+    <text x="1092" y="160" fill="#7E93A8" font-size="13" text-anchor="middle">外部依赖</text>
+    <text x="1092" y="180" fill="#7E93A8" font-size="12" text-anchor="middle">urllib / json</text>
+  </g>
+
+  <line x1="836" y1="96" x2="836" y2="190" stroke="#FFFFFF" stroke-opacity="0.09"/>
+  <line x1="964" y1="96" x2="964" y2="190" stroke="#FFFFFF" stroke-opacity="0.09"/>
+
+  <!-- 底部金线 -->
+  <rect x="0" y="297" width="1200" height="3" fill="url(#gold)"/>
+</svg>
