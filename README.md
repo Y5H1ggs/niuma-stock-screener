@@ -9,6 +9,21 @@
 **仓库地址**：https://github.com/Y5H1ggs/niuma-stock-screener
 **当前版本**：`v1.2.47`（2026-11-12）　·　许可 MIT　·　版本沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
+**两种获取方式**
+
+| 方式 | 命令 / 入口 | 适用 |
+|---|---|---|
+| 克隆仓库 | `git clone https://github.com/Y5H1ggs/niuma-stock-screener.git` | 想要全部源码、测试与开发脚本 |
+| **下载云端包** | [`niuma-cloud-v1.2.47.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.47/niuma-cloud-v1.2.47.zip)（0.39 MB / 46 条目） | 直接上架 Skill，含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
+
+安装后先跑自检，再跑冒烟：
+
+```bash
+python "<包内绝对路径>/scripts/run.py" doctor    # 环境体检
+python "<包内绝对路径>/scripts/run.py" test      # 29 个离线单元测试（0.1 秒）
+python "<包内绝对路径>/scripts/run.py" health --quick
+```
+
 ---
 
 ## 本次增强（v1.2.43 → v1.2.47）

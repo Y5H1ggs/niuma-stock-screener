@@ -88,6 +88,14 @@ def collect():
         for f in sorted(os.listdir(ed)):
             if os.path.isfile(os.path.join(ed, f)):
                 add('examples/' + f, os.path.join(ed, f))
+    # 单元测试（v1.2.47）——**必须打进包**：`run.py test` 已在包内，
+    # 不给 tests 会让它必然报「目录不存在」。两个文件约 20 KB，体积可忽略，
+    # 且让使用者能自检 prob 的单调性/四格自洽等不变量。
+    td = os.path.join(ROOT, 'tests')
+    if os.path.isdir(td):
+        for f in sorted(os.listdir(td)):
+            if f.endswith('.py') and os.path.isfile(os.path.join(td, f)):
+                add('tests/' + f, os.path.join(td, f))
     return out
 
 
