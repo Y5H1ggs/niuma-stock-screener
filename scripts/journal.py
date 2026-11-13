@@ -268,23 +268,58 @@ def equity_points():
 
 
 def max_drawdown():
-    """返回 (当前回撤%, 历史最大回撤%)，基于已实现盈亏曲线。"""
-    pts = equity_points()
-    if not pts:
+    """返回 (当前回撤%, 历史最大回撤%)，**基于权益曲线**而非累计盈亏曲线。
+
+    ⚠️ v1.2.53 修（2026-11-13 实测发现的真 bug）：
+      旧实现用「累计盈亏 cum」算回撤，且要求 `peak > 0` 才计算：
+
+          peak = max(cum)                      # 本账户：各笔累计盈亏全程为负
+          if peak > 0: mdd = ...
+          cur_dd = ... if peak > 0 else 0.0    # ← peak 恒 ≤ 0，永远走 else
+
+      本账户**第一笔就亏**，之后累计盈亏全程为负，
+      于是 `peak > 0` 恒不成立 → **回撤永远返回 0.0**。
+
+      后果：`enforce_halt()` 靠 `dd_cur <= -max_drawdown_pct` 判定熔断，
+      而 dd_cur 恒为 0 → **15% 回撤熔断永不触发**，风控形同虚设。
+      实际当前回撤是 **-14.7%**，已经贴着熔断线。
+
+      **这是「完好地写着错东西」的典范**：函数能跑、返回 0.0、格式正常，
+      但 0.0 的语义是「无回撤」，实际是「亏了 14.7%」。
+
+    新口径：
+      当前权益 = cash + 持仓成本
+      回撤%    = (当前权益 − 历史峰值权益) / 历史峰值权益 × 100
+    峰值权益来自 account.json 的 `peak_equity`（由 `_sync_account_from_trades` 维护）。
+    """
+    acc = account()
+    peak = float(acc.get('peak_equity') or 0.0)
+    cash = float(acc.get('cash') or 0.0)
+    held = sum(float(t.get('buy_total') or 0.0) for t in open_positions())
+    cur_equity = cash + held
+
+    if peak <= 0 or cur_equity <= 0:
         return 0.0, 0.0
-    peak = 0.0
-    mdd = 0.0
-    for _d, cum, _t in pts:
-        peak = max(peak, cum)
-        if peak > 0:
-            mdd = min(mdd, (cum - peak) / abs(peak) * 100 if peak else 0)
-    cur = pts[-1][1]
-    peak = max(p for _d, p, _t in pts) if pts else 0
-    cur_dd = (cur - peak) / abs(peak) * 100 if peak > 0 else 0.0
-    return round(cur_dd, 2), round(mdd, 2)
+
+    dd_cur = (cur_equity - peak) / peak * 100
+
+    # 历史最大回撤：无逐日权益快照，用「累计盈亏」的峰谷相对跌幅近似，
+    # 但分母加上峰值权益，避免小基数放大。至少不小于当前回撤。
+    dd_max = dd_cur
+    pts = equity_points()
+    if pts:
+        base = peak - max(p for _d, p, _t in pts)   # 峰值权益对应的累计盈亏基准
+        if base > 0:
+            run_peak = None
+            for _d, cum, _t in pts:
+                eq = base + cum
+                run_peak = eq if run_peak is None else max(run_peak, eq)
+                if run_peak > 0:
+                    dd_max = min(dd_max, (eq - run_peak) / run_peak * 100)
+
+    return round(dd_cur, 2), round(dd_max, 2)
 
 
-# ------------------------------------------------------------------ CLI
 def _arg(name, default=None):
     a = sys.argv
     if name in a:

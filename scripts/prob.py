@@ -199,6 +199,22 @@ def build_dist(bars, conds, warmup=30, beta_bars=None, require_all=True):
     """
     assert conds, '至少给一个条件'
     rows = records(bars, warmup, beta_bars)
+
+    # v1.2.53: 板块字段静默降级检查。
+    #   board_kline 会偶发返回 0 根（限流/收盘切换）-> beta_series 为 {} ->
+    #   records 不注入 bk_* -> 所有 bk_* 条件恒 False -> 分布为空。
+    #   下游只看到「N=0」，很容易读成「历史上没出现过这种组合」。必须区分。
+    bk_missing = 0
+    if beta_bars is not None:
+        if not beta_bars:
+            raise ValueError('beta_bars 是空列表 —— 板块 K 线取数失败，'
+                             '不能静默降级成「无板块字段」（用 ds.board_kline 重取）')
+        withbk = sum(1 for r in rows if r.get('bk_chg') is not None)
+        bk_missing = len(rows) - withbk
+        if rows and withbk == 0:
+            raise ValueError('beta_bars 有 %d 根，但 records 里没有任何 bk_chg 值 —— '
+                             '多半是日期对不上或整列 None；'
+                             '不要当成「板块条件无匹配样本」' % len(beta_bars))
     by_date = {}
     err_n = 0
     for r in rows:
@@ -227,7 +243,7 @@ def build_dist(bars, conds, warmup=30, beta_bars=None, require_all=True):
     recs = [by_date[d] for d in sorted(by_date)]
     out = {'n': len(recs), 'dates': [r['d'] for r in recs],
            'tags': {r['d']: r['tags'] for r in recs}, 'recs': recs,
-           'cond_errors': err_n, 'rows_scanned': len(rows)}
+           'cond_errors': err_n, 'rows_scanned': len(rows), 'bk_missing': bk_missing}
     for k in ('r1', 'r3', 'r5', 'open1', 'hi1', 'lo1', 'amp1', 'hi3', 'lo3', 'hi5', 'lo5'):
         out[k] = [r.get(k) for r in recs if r.get(k) is not None]
     return out
@@ -307,6 +323,11 @@ def threshold_probs(dist, levels, base, horizon=1):
     r = dist['r%d' % horizon]
     n = len(r)
     assert n > 0, 'h%d 空分布' % horizon
+    # ★ v1.2.53：base 是所有 need 的分母，≤0 会直接 ZeroDivisionError。
+    #   实测传 base=0 时抛的是「float division by zero」，看不出是哪一步错的。
+    #   显式校验，把错误变成可读的说明。
+    assert base and base > 0, ('base 必须为正（当前 %r）—— 它是算 need 的分母，'
+                               '传 0/None 会除零' % (base,))
     items = []
     for x in levels:
         if isinstance(x, (list, tuple)):
@@ -317,6 +338,20 @@ def threshold_probs(dist, levels, base, horizon=1):
         k = sum(1 for v in r if v > need)
         items.append({'label': lab, 'price': px, 'need': need,
                       'prob': 100.0*k/n, 'k': k, 'n': n})
+
+    # ★ v1.2.53：每项补上二项标准误与样本量。
+    #   实测 N=3 时 threshold_probs 会给出「100%」且无任何警示，
+    #   使用者极易当确定值引用（这正是一天前「70-85% 被单日证伪」的根源）。
+    import math as _m
+    for it in items:
+        p_ = it['prob'] / 100.0
+        it['n'] = n
+        it['se'] = round(_m.sqrt(max(p_ * (1 - p_), 0) / n) * 100, 1) if n else None
+        it['low_n'] = n < 20          # N<20 时标准误 >11pp，不可当确定值
+        it['ci95'] = ([max(0.0, round(it['prob'] - 1.96 * it['se'], 1)),
+                       min(100.0, round(it['prob'] + 1.96 * it['se'], 1))]
+                      if it['se'] is not None else None)
+
     items.sort(key=lambda z: -z['need'])
     prev = None
     for it in items:

@@ -203,9 +203,25 @@ def check(code, cash=None, stop_pct=None):
     shares = int(budget / price / lot) * lot if price > 0 else 0
     if shares <= 0:
         need = price * lot
+        # ★ v1.2.53 修：旧实现一律报「可用现金仅 X 元，不足以买入 1 手」，
+        #   但 budget = min(现金, 风险上限, 凯利仓位)，真正的瓶颈可能不是现金。
+        #   实测：cash=10000、1 手需 1041，却报「现金 10000 不足以买入 1041」——
+        #   数字都对，**因果解释错**。真实原因是凯利仓位只给了 815 元。
+        #   把小资金下的「规则不可执行」误报成「钱不够」，会让人往错方向调整。
+        if target_amt < need and target_amt <= snapshot['cash'] and target_amt <= max_amt:
+            why = ('**凯利仓位不足一手**：半凯利给出 %.0f 元（%.2f%%），'
+                   '而 1 手 %s 需 %.0f 元 → 按当前仓位规则**买不到最小单位**。'
+                   '这是合法的不下注结论，**不是现金不足**（现金有 %.0f 元）。'
+                   % (target_amt, target_pct * 100, s['name'], need, snapshot['cash']))
+        elif max_amt < need:
+            why = ('风险预算上限不足一手：G4 算出买入上限 %.0f 元 < 1 手 %.0f 元'
+                   '（放宽需提高 risk_per_trade_pct 或放宽止损）' % (max_amt, need))
+        elif snapshot['cash'] < need:
+            why = '可用现金 %.2f 元 < 1 手 %.0f 元' % (snapshot['cash'], need)
+        else:
+            why = '计算异常：budget=%.2f 但 shares=0（请检查 price/lot）' % budget
         return {'code': code, 'name': s['name'], 'allow': False, 'level': 'reject',
-                'reasons': reasons + ['可用现金仅 %.2f 元，不足以买入 1 手 %s（需 %.2f 元）'
-                                      % (snapshot['cash'], s['name'], need)],
+                'reasons': reasons + [why],
                 'suggest_shares': 0,
                 'suggest_cost': 0, 'equity': equity, 'price': price,
                 'sector': sector, 'cap': bucket}
