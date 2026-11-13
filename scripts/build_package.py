@@ -96,6 +96,15 @@ def collect():
         for f in sorted(os.listdir(td)):
             if f.endswith('.py') and os.path.isfile(os.path.join(td, f)):
                 add('tests/' + f, os.path.join(td, f))
+    # 图文文档（v1.2.55）——**与 tests 同一类遗漏**：
+    #   SKILL.md / README 会引用 docs/LIMITATIONS.md，不给它就会在包里断链。
+    #   4 张 SVG 合计约 26 KB，体积可忽略，但缺了就等于「有目录没内容」。
+    dd = os.path.join(ROOT, 'docs')
+    if os.path.isdir(dd):
+        for f in sorted(os.listdir(dd)):
+            fp = os.path.join(dd, f)
+            if os.path.isfile(fp) and f.lower().endswith(('.md', '.svg')):
+                add('docs/' + f, fp)
     return out
 
 

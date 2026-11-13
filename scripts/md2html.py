@@ -53,6 +53,7 @@ pre code{background:none;color:inherit;padding:0;font-size:13px;}
 .copy:hover{background:rgba(255,255,255,.22);}
 .copy.ok{background:rgba(126,217,168,.24);border-color:rgba(126,217,168,.5);}
 table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;}
+img{max-width:100%;height:auto;display:block;margin:18px 0;border-radius:6px;}
 th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top;}
 th{background:var(--goldsoft);color:#6B5320;font-weight:600;}
 tr:nth-child(even) td{background:#FCFBF8;}
@@ -92,6 +93,9 @@ def inline(s):
     s = re.sub(r'`([^`]+)`', r'<code>\1</code>', s)
     s = re.sub(r'\*\*([^*]+)\*\*', r'<b>\1</b>', s)
     s = re.sub(r'(?<!\*)\*([^*\n]+)\*(?!\*)', r'<i>\1</i>', s)
+    # ★ 图片必须在链接**之前**处理：否则 ![alt](src) 会先被链接规则吃掉，
+    #   渲染成 "!<a href=...>alt</a>"（实测就是这样，图片位置只剩 alt 文字 + 一个感叹号）
+    s = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', r'<img src="\2" alt="\1">', s)
     s = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', s)
     return s
 
