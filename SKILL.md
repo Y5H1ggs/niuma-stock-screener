@@ -4,7 +4,7 @@ display_name: 选股分析牛马工具
 display_name_en: A-Share Research Workbench
 description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、107 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
 description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
-version: 1.2.50
+version: 1.2.51
 license: MIT
 agent_created: true
 ---
@@ -33,6 +33,35 @@ agent_created: true
 > 研究流程可复用，alpha 全在**风控纪律、板块资金接力判定与回测口径的干净程度**。
 
 ---
+
+## ★★★ 出口七问（v1.2.51，交付前强制自检）
+
+> 来由：2026-11-13 一次任务里连续出现 **7 类「绿灯幻觉」**——
+> 所有检查都通过、所有格式都合规、所有断言都绿，但**结论是错的**。
+> 绿灯只证明「流程执行完毕」，不证明「结果正确」；**检查器本身有偏时，它会稳定地为你亮绿灯。**
+>
+> 下面七问，任何一条答不上来，**不许交付**。
+
+| # | 问题 | 对应的坑 |
+|---|---|---|
+| **1** | **这个数是我算的，还是我拍的？** 拍的有没有标「无验证」？ | P117 自造评分冒充方法论 |
+| **2** | **取不到数据时，结论走「通过」还是「不通过」？** 代码里有没有 `(x or 0)`？ | P118 否决判据默认无罪 |
+| **3** | **我写的免责声明，是在提醒读者，还是在给自己开脱？** 写完它之后，我少下结论了吗？ | P119 免责声明当成许可证 |
+| **4** | **这几个「理由」是独立来源，还是同一份数据的两种读法？** 剔除一条，其他会不会同时失效？ | P120 证据重复计数 |
+| **5** | **每个百分比的分子分母，各是什么时点？** 是涨跌幅（对昨收）还是价差（对某时点）？ | P121 价差 ≠ 涨跌幅 |
+| **6** | **样本覆盖率多少？** 截断/限流是不是被伪装成了「筛选」？ | 41% 样本冒充全市场 |
+| **7** | **我的验收，验证的是结构还是结论？** 结构绿灯（md5/配对/列数/单测）能不能证明结论对？ | 本条的元问题 |
+
+**七问里最容易漏的是第 7 问**：md5 一致、标签配对、列数一致、单测全绿——
+这些**全部通过也不能说明选股结论对**。它们只说明「文件没坏、代码没崩」。
+
+**真正能验证结论的只有三种**：
+1. **外部真值**（收盘数据、公告、他人复现）；
+2. **样本外 / 时间分段检验**；
+3. **有人当面质疑**（成本最低、命中率最高）。
+
+**结论出口前，必须回答一句**：「如果这条结论是错的，最早会在什么时候、被什么数据推翻？」
+答不上来 → 这条结论不可证伪，不该以确定性口吻输出。
 
 ## ★★ 读文件策略（v1.2.50，直接决定 token 消耗）
 
