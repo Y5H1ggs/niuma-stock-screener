@@ -1,11 +1,11 @@
 # 选股分析牛马工具
 
-![选股分析牛马工具 · v1.2.55](docs/banner.svg)
+![选股分析牛马工具 · v1.2.56](docs/banner.svg)
 
 一个 **A 股个人研究复盘工具**。把数据源、判读铁律、量化口径、仓位纪律，
 以及最关键的——**一套会自我否证的检查机制**——固化成可被 Agent 加载的 Skill。
 
-**125 条踩坑 · 29 个离线测试 · 41 个脚本 · 0 个第三方依赖 · MIT**
+**128 条踩坑 · 29 个离线测试 · 44 个脚本 · 0 个第三方依赖 · MIT**
 
 ---
 
@@ -42,7 +42,7 @@
 |---|---|---|
 | **输出** | 买入信号 / 目标价 | 候选池 + **情景概率树** + 可证伪条件 |
 | **确定性** | 斩钉截铁 | **「不交易」是合法结论**（凯利 f\* ≤ 0 就不下注） |
-| **错误处理** | 尽量显得没问题 | 把错误本身做成资产（125 条踩坑库） |
+| **错误处理** | 尽量显得没问题 | 把错误本身做成资产（128 条踩坑库） |
 | **概率来源** | 模型输出 | **历史条件频率 + 台账校准**；模型未通过检验就不用 |
 | **仓位** | 满仓 / 固定比例 | **凯利公式 + 2~3 只分散**，单笔 ≤33% |
 | **验证** | 回测截图 | 外部真值比对（md5 / 远端 clone / 独立双源） |
@@ -71,12 +71,13 @@
 - 一个**判读手册**：`references/` 下 8 份文档可以脱离代码单独读
 - 一个**自我检查框架**：29 个离线测试 + 4 类结构验收 + 隐私闸门
 - 一个**训练材料**：想学 A 股判读方法，从踩坑库读起比读教程有效
+- 一套**基本面工具**：估值分位 / 杜邦分解 / 三表勾稽 / 三维度荐股（规则透明，不是模型）
 
 **不是：**
 
 - ❌ 不是荐股工具——给的是概率与情景，不是买入信号
 - ❌ 不是实盘接单系统——研究工具，不含下单与账户对接
-- ❌ 不是中长线价值投资框架——不碰估值与财报深度建模
+- ❌ 不是估值择时工具——估值分位说的是「相对自己历史的贵贱」，**不是买点**
 - ❌ 不是高频 / Level-2 工具——只用公开免费接口
 
 ---
@@ -112,7 +113,7 @@ python scripts/run.py health --quick   # 接口连通性
 | 方式 | 入口 | 适用 |
 |---|---|---|
 | 克隆仓库 | `git clone https://github.com/Y5H1ggs/niuma-stock-screener.git` | 要全部源码、测试与开发脚本 |
-| **下载云端包** | [`niuma-cloud-v1.2.55.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.55/niuma-cloud-v1.2.55.zip)（0.43 MB / 50 条目） | 直接上架 Skill。含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
+| **下载云端包** | [`niuma-cloud-v1.2.56.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.56/niuma-cloud-v1.2.56.zip)（0.43 MB / 50 条目） | 直接上架 Skill。含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
 
 ---
 
@@ -160,6 +161,51 @@ python scripts/run.py prob <代码> \
 > `--record` 会写入预测台账，到期由 `calibrate.py` 自动结算。
 > **不落账的预测等于没有预测**——因为永远不会有人回头检查它。
 
+### 场景 3.5 · 估值贵不贵 + 财报靠不靠得住
+
+```bash
+python scripts/run.py valuation 600000          # 估值分位 / 相对行业 / PEG
+python scripts/run.py valuation 600000 --dcf     # 加 DCF 敏感性表 + 反向 DCF
+python scripts/run.py fundamentals 600000        # 杜邦 / 三表勾稽 / 偿债 / 成长
+```
+
+**看什么**：
+
+| 指标 | 含义 | 危险信号 |
+|---|---|---|
+| PE 历史分位 | 相对**自己**过去 3 年的位置 | 分位 >85% 且增速在下滑 |
+| PE vs 行业中位 | 相对**同行**的溢价 | 溢价 >1.5x 但 ROE 低于中位 |
+| 杜邦分解 | ROE 是靠利润率、周转，还是加杠杆 | 权益乘数 >5 且还在上升 |
+| 正应计占比 | 利润有没有变成现金 | >10% 说明利润与现金流背离 |
+| 现金含量 | OCF / 净利润 | 连续 4 期 <0.8 |
+
+> ⚠️ 两个必须知道的口径陷阱：
+> **① 财报是累计口径**，Q3 直接算周转会偏低 25%（已年化处理）；
+> **② 金融业不适用**这些工商企业指标（银行负债率 90% 是常态）。
+
+### 场景 3.6 · 三维度荐股（规则筛选，不是模型）
+
+```bash
+python scripts/run.py recommend --mode value --limit 10     # 低估值
+python scripts/run.py recommend --mode quality --limit 10   # 高质量
+python scripts/run.py recommend --mode growth --limit 10    # 高成长
+python scripts/run.py recommend --mode value --codes 600000,600519   # 指定票对比
+```
+
+三种模式的维度（**等权**，写在代码 `MODES` 字典里）：
+
+| 模式 | 维度 |
+|---|---|
+| `value` | PE 分位（低好）· PB 分位（低好）· ROE · 负债率（低好） |
+| `quality` | ROE · 现金含量 · 利息保障 · 负债率（低好） |
+| `growth` | 营收增速 · 净利增速 · 现金含量 · ROE |
+
+**三条必须读的话**：
+
+1. `composite` 是**池内相对排名分**（0~100），**不是收益率、不是上涨概率**；
+2. 权重等权是**约定**，未做参数优化——它只是让排序可复现，不代表找到了最优组合；
+3. **红旗 ≥2 条自动降入观察池**。红旗比亮点更值得看。
+
 ### 场景 4 · 复盘自己的交易
 
 ```bash
@@ -196,13 +242,14 @@ python scripts/run.py docscheck                      # 文档声明 vs 代码真
 
 ## 命令速查
 
-`run.py` 是统一入口，29 个子命令：
+`run.py` 是统一入口，37 个子命令：
 
 | 类别 | 子命令 |
 |---|---|
 | **取数** | `ds` `ths` `make_pool` |
 | **筛选** | `scan` `winrate` `sector` `mood` `review` |
 | **分析** | `report` `patterns` `prob` `predict` `pit` |
+| **基本面** | `valuation` `fundamentals` `recommend` |
 | **风控** | `risk` `journal` `calibrate` `fees` |
 | **研究** | `factors` `factor_ic` `model` `backtest` |
 | **诊断** | `health` `selfcheck` `smoketest` `verify` `doctor` `test` |
@@ -262,13 +309,16 @@ python scripts/run.py prob --help
 ├── CHANGELOG.md                # 最近 6 个版本（历史归档见 CHANGELOG_archive.md）
 ├── config.example.json         # 个人参数模板（复制为 config.json）
 ├── docs/                       # 4 张架构 / 机制图
-├── scripts/                    # 41 个脚本，run.py 是统一入口
+├── scripts/                    # 44 个脚本，run.py 是统一入口
 │   ├── run.py                  # ★ 所有子命令从这里进
 │   ├── ds.py                   # 统一取数层（多源降级 + 量纲校验）
 │   ├── prob.py                 # 先分布后概率（含单调性断言）
 │   ├── risk.py                 # 凯利仓位 + 账户级风控
 │   ├── journal.py              # 交易台账（append-only）
 │   ├── calibrate.py            # 预测结算与校准
+│   ├── valuation.py            # 估值分位 / 相对估值 / DCF / 反向 DCF
+│   ├── fundamentals.py         # 杜邦 / 三表勾稽 / 健康 / 成长质量
+│   ├── recommend.py            # 三维度荐股（等权分位排名）
 │   ├── check_privacy.py        # 隐私闸门
 │   └── ...
 ├── references/                 # 8 份可独立阅读的文档
@@ -296,7 +346,7 @@ python scripts/run.py prob --help
 
 ## 版本与更新
 
-**当前版本 `v1.2.55`**（2026-11-13）· 许可 MIT · 完整沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本 `v1.2.56`**（2026-11-13）· 许可 MIT · 完整沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 最近几个版本的实质变化：
 

@@ -2,9 +2,9 @@
 name: 选股分析牛马工具
 display_name: 选股分析牛马工具
 display_name_en: A-Share Research Workbench
-description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、125 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
+description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、128 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
 description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
-version: 1.2.55
+version: 1.2.56
 license: MIT
 agent_created: true
 ---
@@ -95,7 +95,7 @@ r['warn']       # 与 include_today 不符时的说明（不为 None 就必须�
 
 ## ★★ 读文件策略（v1.2.50，直接决定 token 消耗）
 
-> 本 skill 的 `references/pitfalls.md` 已到 **98 KB / 3362 行 / 125 条**，
+> 本 skill 的 `references/pitfalls.md` 已到 **100 KB / 3485 行 / 128 条**，
 > `CHANGELOG_archive.md` 有 **68 KB**。**整篇读进来一次，抵得上十次正常任务。**
 
 | 场景 | 读什么 | 体积 |
@@ -619,6 +619,54 @@ ds.fflow('BK0475', klt=1, is_sector=True, expect='电力设备')   # -> 抛 Valu
 - **板块体系切换**（push2 掉线降级到 datacenter，只有 128 个申万风格行业，
   压根没有「电力设备」这个概念）→ `unverifiable=True`，**这是体系差异不是代码错**。
 两者都**不得当成「代码正确」放行**。
+
+### ★★ 估值与财报深挖（`valuation.py` / `fundamentals.py` / `recommend.py`，v1.2.56）
+
+**三个模块分工**：
+
+| 模块 | 回答什么 | 不做什么 |
+|---|---|---|
+| `valuation.py` | 现在贵不贵（历史分位）· 比同行贵还是便宜 · 当前价格隐含什么预期 | **不给目标价**；DCF 只出敏感性表 |
+| `fundamentals.py` | 杜邦拆解 ROE · 三表是否勾稽 · 盈利/成长质量 · 偿债能力 | 不做行业景气判断 |
+| `recommend.py` | 三维度筛选 + 分位排名 + 红旗 | **不预测涨跌**；`composite` 是池内排名分，不是收益预期 |
+
+```bash
+# 估值分位 + 相对估值 + PEG（加 --dcf 出敏感性表）
+python run.py valuation 600000
+python run.py valuation 600000 --dcf --json
+
+# 杜邦 / 三表 / 健康 / 成长
+python run.py fundamentals 600000
+
+# 荐股：value / quality / growth 三种模式
+python run.py recommend --mode value --limit 10
+python run.py recommend --mode quality --codes 600000,600519
+```
+
+**四条口径红线（全部来自实测事故，见 P128~P130）**
+
+1. **累计口径必须年化。** 三表与 `financials()` 的营收/净利/现金流都是**年初至今累计**。
+   Q3 报表直接用，周转率与 ROE 会**偏低 25%**。
+   TTM = `本期累计 + (上年年报 − 上年同期累计)`；周转率 `× 360 / 已过天数`。
+
+2. **小基数不算百分比。** 应收本来≈0 的公司，同比会算出 `+1327%`——
+   不是「靠赊销」，是分母太小。上年科目 < 上年营收 **0.5%** 时直接置 `None`。
+
+3. **`ulist` 批量会静默降级。** 单只走 push2（有 `f9/f23`），
+   批量走 datacenter（**没有 f9/f23**，PE 在 `_days[0].PE_DYNAMIC`）。
+   批量调用后**必须 dump 一条确认 `_src` 与字段集**。
+   另：`PE_DYNAMIC` 是**动态口径**，与 TTM PE 不可混比。
+
+4. **金融业不套用工商企业指标。** 银行资产负债率 90%+ 是常态，没有应收/存货，
+   OCF 含存款增减。`is_financial(code)` 为 True 时，这些指标归 `notes`（说明），
+   **不归 `flags`（红旗）** —— 否则一句免责声明就把整个行业排除掉了。
+
+**荐股模块的透明性约定**
+
+- 排序 = **各维度分位等权平均**，权重等权是约定，**未做参数优化**
+- 红旗 ≥2 条的自动降入「观察池」，不进推荐
+- 每种模式用哪几个维度写在 `MODES` 字典里，**改维度必须同步改文档**
+- ⚠️ 这仍然是**规则筛选**，不是模型。`model.py` 未通过检验（AUC 0.508~0.528）的事实没有变
 
 ### ★★ 板块 K 线：一直被误判为「取不到」（`ds.board_kline` / `ds.board_stage`，v1.2.47）
 

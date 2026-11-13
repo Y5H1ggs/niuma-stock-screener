@@ -42,6 +42,8 @@ COMMANDS = {
     'makeindex': 'make_index.py', 'docscheck': 'check_docs.py',
     # 概率 / 产物验收
     'prob': 'prob.py', 'checkhtml': 'check_html.py',
+    'valuation': 'valuation.py', 'fundamentals': 'fundamentals.py',
+    'recommend': 'recommend.py',
     # 因子 / 模型 / 辅助
     'make_pool': 'make_pool.py', 'factors': 'factors.py',
     'build_panel': 'build_panel.py', 'factor_ic': 'factor_ic.py',
