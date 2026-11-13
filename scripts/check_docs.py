@@ -74,6 +74,14 @@ def check(verbose=False):
             if n != t['n']:
                 errs.append('%s 声明 %d 条，实际 %d 条' % (name, n, t['n']))
 
+    # ★ 2026-11-13：英文 description 里的「N documented pitfalls」漏过一次——
+    #   DECL_RE 只认中文「N 条」，于是 SKILL.md 的英文摘要停在 107 条
+    #   （中文已是 128），docscheck 照样打 ✓。两种语言必须同一口径。
+    for m in re.finditer(r'(\d{2,3})\s*documented\s+pitfalls', skill):
+        if int(m.group(1)) != t['n']:
+            errs.append('SKILL.md 英文声明 %s documented pitfalls，实际 %d 条'
+                        % (m.group(1), t['n']))
+
     # ---------- ② 体积 / 行数声明 ----------
     for m in re.finditer(r'\*\*(\d+)\s*KB\s*/\s*(\d+)\s*行', skill + readme):
         kb, ln = int(m.group(1)), int(m.group(2))
@@ -83,14 +91,54 @@ def check(verbose=False):
         if abs(ln - t['lines']) > max(20, t['lines'] * 0.1):
             errs.append('声明 %d 行，实际 %d 行' % (ln, t['lines']))
 
+    # ---------- ②b 发布包体积 / 条目数声明（对齐 dist 里当前版本的 zip）----------
+    # ★ 2026-11-13 实测：README 写着「0.43 MB / 50 条目」，而 v1.2.56 的包实际
+    #   0.45 MB / 58 条目。旧校验只认「**N KB / M 行」这一种格式，对发布包一律不查
+    #   → 这两组数字从写下去那天起就没被验证过，每升一版就落后一版。
+    import zipfile
+    _vm = re.search(r'^version:\s*([\d.]+)', skill, re.M)
+    v_now = _vm.group(1) if _vm else None
+    if v_now:
+        zp = os.path.join(ROOT, 'dist', 'niuma-cloud-v%s.zip' % v_now)
+        if not os.path.exists(zp):
+            warns.append('当前版本 v%s 在 dist/ 下没有对应 zip —— 未打包或已清理，'
+                         '包体积声明无法校验' % v_now)
+        else:
+            real_mb = os.path.getsize(zp) / 1048576.0
+            try:
+                real_n = len(zipfile.ZipFile(zp).namelist())
+            except Exception as e:
+                real_n = None
+                warns.append('读不出 %s 的条目数：%s' % (os.path.basename(zp), e))
+            for name, txt in (('SKILL.md', skill), ('README.md', readme)):
+                for m in re.finditer(r'([\d.]+)\s*MB\s*/\s*(\d+)\s*条目', txt):
+                    mb, cnt = float(m.group(1)), int(m.group(2))
+                    if abs(mb - real_mb) > 0.01:
+                        errs.append('%s 声明包体积 %.2f MB，实际 %.2f MB'
+                                    % (name, mb, real_mb))
+                    if real_n is not None and cnt != real_n:
+                        errs.append('%s 声明包 %d 条目，实际 %d 条目'
+                                    % (name, cnt, real_n))
+
     # ---------- ③ 版本号三处 ----------
     v_skill = re.search(r'^version:\s*([\d.]+)', skill, re.M)
-    v_readme = re.search(r'\*\*当前版本\*\*：`v([\d.]+)`', readme)
+    # ★ 2026-11-13：原正则是 `**当前版本**：`v...``，而 README 实际写的是
+    #   `**当前版本 `v1.2.57`**`（粗体包在外面、没有冒号）→ 永远匹配不到 → None。
+    #   而 None 会被下面的 `{v for v in vs.values() if v}` 静默过滤掉，
+    #   于是 README 的版本号**从上线起就没被校验过**，改错了也照样 ✓。
+    #   → 放宽匹配 + 「读不到就报错」，不再允许缺席。
+    v_readme = re.search(r'当前版本[^0-9A-Za-z]{0,6}v([\d.]+)', readme)
     v_change = re.search(r'^## v([\d.]+)', change, re.M)
     vs = {'SKILL': v_skill and v_skill.group(1),
           'README': v_readme and v_readme.group(1),
           'CHANGELOG': v_change and v_change.group(1)}
     vals = {v for v in vs.values() if v}
+    # ★ 缺一处就报错：曾经 README 读成 None，被下面的过滤静默吞掉，
+    #   「两处一致」被当成「三处一致」。缺席不是一致。
+    _missing = [k for k, v in vs.items() if not v]
+    if _missing:
+        errs.append('版本号读取失败：%s（格式变了或没写）—— 不能用其余两处的一致冒充三处一致'
+                    % ', '.join(_missing))
     if len(vals) > 1:
         errs.append('版本号不一致：%s' % vs)
     elif not vals:
@@ -104,6 +152,17 @@ def check(verbose=False):
         # CHANGELOG 首版必须等于当前版本
         if vs.get('CHANGELOG') and vs['CHANGELOG'] != cur:
             errs.append('CHANGELOG 首条 v%s != 当前 v%s' % (vs['CHANGELOG'], cur))
+        # ★ 2026-11-13：README 的「最近几个版本」表必须从当前版本开始。
+        #   实测 v1.2.55/56 都发布了，表格首行仍停在 v1.2.54 ——
+        #   标题写对了、表格没跟上，是最典型的「半更新」，而版本号三处校验只看标题。
+        seg = readme.split('最近几个版本的实质变化', 1)
+        if len(seg) == 2:
+            m_first = re.search(r'^\|\s*\*{0,2}v([\d.]+)\*{0,2}\s*\|', seg[1], re.M)
+            if m_first and m_first.group(1) != cur:
+                errs.append('README 版本沿革表首行 v%s != 当前 v%s（标题新、表格旧）'
+                            % (m_first.group(1), cur))
+        else:
+            warns.append('README 找不到「最近几个版本的实质变化」小节，沿革表无法校验')
 
     # ---------- ④ P 编号引用是否真实存在 ----------
     bad_refs = set()
@@ -140,6 +199,15 @@ def autofix():
         return 1
     n, kb, ln = t['n'], t['kb'], t['lines']
     touched = 0
+    # ★ 2026-11-13：原来这里把「P5~P122」写死在替换串里 —— 正文早到 P130 了，
+    #   对齐功能本身在制造错误。编号上限必须从正文算。
+    _nums = []
+    for _pid in t['ids']:
+        try:
+            _nums.append(int(_pid[1:].split('.')[0]))
+        except Exception:
+            pass
+    pmax = max(_nums) if _nums else None
 
     for path in ('SKILL.md', 'README.md', 'references/pitfalls.md'):
         full = os.path.join(ROOT, path)
@@ -150,13 +218,18 @@ def autofix():
         # ① 「N 条踩坑」「N 条真实踩坑记录（P5~Pxxx）」
         s = re.sub(r'(\d{2,3})\s*条踩坑记录', '%d 条踩坑记录' % n, s)
         s = re.sub(r'\*\*(\d{2,3}) 条真实踩坑记录（P5~P\d+(?:\.\d)?）\*\*',
-                   '**%d 条真实踩坑记录（P5~P122）**' % n, s)
+                   '**%d 条真实踩坑记录（P5~P%s）**'
+                   % (n, ('P%d' % pmax) if pmax is not None else 'P?'), s)
         s = re.sub(r'(\d{2,3})\s*条踩坑', '%d 条踩坑' % n, s)
         # ② 「N KB / M 行 / K 条」
         s = re.sub(r'\*\*(\d+) KB / (\d+) 行 / (\d+) 条\*\*',
                    '**%d KB / %d 行 / %d 条**' % (kb, ln, n), s)
-        # ③ pitfalls 头部「总条目：N 个标题」
+        # ③ pitfalls 头部「总条目：N 个标题」+「覆盖编号 P5 ~ Pxxx」
         s = re.sub(r'总条目：(\d+) 个标题', '总条目：%d 个标题' % n, s)
+        if pmax is not None:
+            s = re.sub(r'覆盖编号 `P5 ~ P\d+`', '覆盖编号 `P5 ~ P%d`' % pmax, s)
+        # ④ 英文摘要「N documented pitfalls」（中文的对齐逻辑管不到它，漏过一次）
+        s = re.sub(r'(\d{2,3})\s*documented pitfalls', '%d documented pitfalls' % n, s)
         if s != orig:
             io.open(full, 'w', encoding='utf-8').write(s)
             touched += 1

@@ -8,7 +8,7 @@
 > 2. **`P1 ~ P4` 不存在**（编号从 `P5` 起）。
 > 3. **`P37 / P38` 各被两批不同内容使用过**（带 `.1 / .2` 子编号的那批是较早的一批）。
 >
-> **总条目：128 个标题，覆盖编号 `P5 ~ P130`（含 P37.1 / P37.2 两个小数编号）。**
+> **总条目：130 个标题，覆盖编号 `P5 ~ P132`（含 P37.1 / P37.2 两个小数编号）。**
 
 ---
 
@@ -3482,3 +3482,109 @@ else:
 - **铁律**：**任何财务阈值，先问「这个阈值是在哪类公司上归纳出来的」。**
   **把不适用写成「说明」，不要写成「红旗」。**
 
+
+---
+
+## P131｜`ds` 指标族**返回类型不统一**：同一行代码，昨天是序列、今天是标量
+
+### 实景（2026-11-13，盘中取指标连续崩两次）
+
+```python
+closes = [b['c'] for b in bars]
+ds.ma(closes, 5)[-1]      # TypeError: 'float' object is not subscriptable
+ds.kdj(h, l, c).items()   # AttributeError: 'tuple' object has no attribute 'items'
+```
+
+去翻源码才发现，同一个 `ds` 模块里：
+
+| 函数 | 返回 |
+|---|---|
+| `ma / rsi / cci / wr / mom` | **标量 float** |
+| `ema` | **标量 float** |
+| `boll / macd` | **dict** |
+| `kdj` | **三元组 `(K, D, J)`** |
+| `pos / pos_ex` | 标量（序列不足返回 `None`） |
+
+**没有任何注释说这件事。** 而 `kline_list` 返回的是 `[{d,o,c,h,l,v}]`（单字母键），
+`snapshot` 返回 `{code: {...}}`，`ulist` 返回 `{code: {f2: 713(×100)}}` ——
+**模块内部四种数据形状并存**，调用方只能靠记忆。
+
+坑在于：**写错了不一定是报错**。
+`ds.boll(closes)['up']` 和 `ds.boll(closes)[0]` 前者对后者 TypeError，还算好；
+但如果有人写 `for x in ds.macd(closes)`，遍历的是 **dict 的键名** `'dif'/'dea'/'macd'`，
+循环能跑完、数字全是字符串，**渲染出来是一张空图，不报错**。
+
+### 修法
+
+调用前 `grep -n "def xxx" -A 6 ds.py`，别按"它应该返回序列"的直觉写。
+需要一次性拿多个指标时，自己在一个 `ind()` 里统一成 dict：
+
+```python
+def ind(closes, highs, lows):
+    return {'ma5': ds.ma(closes, 5),          # 标量
+            'rsi6': ds.rsi(closes, 6),        # 标量
+            'kdj': dict(zip('KDJ', ds.kdj(highs, lows, closes))),   # 三元组→dict
+            'boll': ds.boll(closes),          # 已是 dict
+            'macd': ds.macd(closes)}          # 已是 dict
+```
+
+### 同一族
+
+- P84「列名不得盗用」是**语义**层面的同构要求；
+- 本条是**接口**层面的：**同一族函数必须同构**，否则每次调用都是一次盲猜。
+
+- **铁律**：**"我调过它、上次能用"不是证据——同名函数的返回类型也是运行时变量。**
+  新写一行取值代码前，先看一眼 `def` 上面那行的 `return`。
+
+---
+
+## P132｜`require_all=True` **不是"所有条件都满足"**，多条件永远是 OR
+
+### 实景（2026-11-13，差点把"并集 50%"当成"交集 80%"）
+
+要给明日涨跌定概率，写了两组条件：
+
+```python
+C = lambda r: r['below5'] and r['prev'] < 0 and r['chg'] <= -3.0   # 破位二连阴
+D = lambda r: r['chg'] <= -5.0                                     # 大跌
+dist_inter = prob.build_dist(bars, [C, D], require_all=True)    # 以为是交集
+dist_union = prob.build_dist(bars, [C, D], require_all=False)   # 以为是并集
+```
+
+结果两次输出**完全相同（都是 N=24、收涨 50%）**。
+而真正的交集（`C and D`）是 **N=5、收涨 80%**。
+
+翻 docstring 第 195 行才看到：
+
+> conds: 多个条件是**并集（OR）**。需要交集请写在一个 lambda 里。
+> require_all: True 时只保留 1/3/5 日数据齐全的样本。
+
+**`require_all` 指的是「收益数据齐全」，不是「条件全满足」。**
+名字和语义完全是两回事，而且不传这个参数时它默认 `True` ——
+**默认值看起来像"严格"，实际只是"剔除末尾几根"**。
+
+后果的量级：同一只票、同一天，**交集口径 80% / 并集口径 50%**，
+差 30 个百分点，而且**方向可以相反**（N=5 那组还是「正期望」，N=24 是「负期望」）。
+如果只看概率不看 N，会直接得出"该买"而不是"别碰"。
+
+### 修法
+
+```python
+INTER = lambda r: (r['below5'] and r['prev'] < 0 and r['chg'] <= -3.0) and (r['chg'] <= -5.0)
+UNION = lambda r: (r['below5'] and r['prev'] < 0 and r['chg'] <= -3.0) or  (r['chg'] <= -5.0)
+prob.build_dist(bars, [INTER])   # 交集：N=5
+prob.build_dist(bars, [UNION])   # 并集：N=24
+```
+
+**并且每次都把 `len(dist['r1'])` 打出来。**
+"两组口径输出一模一样"本身就是最强的异常信号 ——
+交集必然 ≤ 并集，**相等就说明有一个参数没生效**。
+
+### 同一族
+
+- P109「先分布后概率」：多个基准率各自报区间，必然矛盾；
+- P98「分位前先问取值连续吗」：口径不成立，算出来的数是伪的；
+- 本条是它们的**参数层**版本：**参数名不等于参数语义。**
+
+- **铁律**：**传参前读 docstring 那一行，不要从参数名推断行为。**
+  **凡是"两个不同设置跑出同一个结果"，先怀疑参数没生效，再怀疑巧合。**

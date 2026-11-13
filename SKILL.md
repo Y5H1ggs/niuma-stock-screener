@@ -2,9 +2,9 @@
 name: 选股分析牛马工具
 display_name: 选股分析牛马工具
 display_name_en: A-Share Research Workbench
-description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、128 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
-description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
-version: 1.2.56
+description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、130 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
+description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 130 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
+version: 1.2.57
 license: MIT
 agent_created: true
 ---
@@ -95,7 +95,7 @@ r['warn']       # 与 include_today 不符时的说明（不为 None 就必须�
 
 ## ★★ 读文件策略（v1.2.50，直接决定 token 消耗）
 
-> 本 skill 的 `references/pitfalls.md` 已到 **100 KB / 3485 行 / 128 条**，
+> 本 skill 的 `references/pitfalls.md` 已到 **103 KB / 3591 行 / 130 条**，
 > `CHANGELOG_archive.md` 有 **68 KB**。**整篇读进来一次，抵得上十次正常任务。**
 
 | 场景 | 读什么 | 体积 |
@@ -109,7 +109,8 @@ r['warn']       # 与 include_today 不符时的说明（不为 None 就必须�
 
 **四条硬规则**：
 
-1. **禁止整篇读 `pitfalls.md`**。先查 `pitfalls_index.md` 的症状列，命中编号再 grep 单节。
+1. **禁止整篇读 `references/pitfalls.md`**。先查 `references/pitfalls_index.md` 的症状列，命中编号再 grep 单节。
+   ⚠️ **路径必须带 `references/`**：老版本曾在包根留下过一份 41 条的 `pitfalls.md` 副本，按裸文件名找会命中它。
 2. **索引是自动生成的**（`python scripts/make_index.py`），**不要手改**——手写必然与正文脱节（P115 的教训：写两遍必错一遍）。
    新增条目后跑一次，`--check` 可校验同步。
 3. **`CHANGELOG_archive.md` 只在追查历史决策时读**，日常不看。

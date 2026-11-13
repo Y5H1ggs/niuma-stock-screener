@@ -1,11 +1,11 @@
 # 选股分析牛马工具
 
-![选股分析牛马工具 · v1.2.56](docs/banner.svg)
+![选股分析牛马工具 · v1.2.57](docs/banner.svg)
 
 一个 **A 股个人研究复盘工具**。把数据源、判读铁律、量化口径、仓位纪律，
 以及最关键的——**一套会自我否证的检查机制**——固化成可被 Agent 加载的 Skill。
 
-**128 条踩坑 · 29 个离线测试 · 44 个脚本 · 0 个第三方依赖 · MIT**
+**130 条踩坑 · 29 个离线测试 · 44 个脚本 · 0 个第三方依赖 · MIT**
 
 ---
 
@@ -42,7 +42,7 @@
 |---|---|---|
 | **输出** | 买入信号 / 目标价 | 候选池 + **情景概率树** + 可证伪条件 |
 | **确定性** | 斩钉截铁 | **「不交易」是合法结论**（凯利 f\* ≤ 0 就不下注） |
-| **错误处理** | 尽量显得没问题 | 把错误本身做成资产（128 条踩坑库） |
+| **错误处理** | 尽量显得没问题 | 把错误本身做成资产（130 条踩坑库） |
 | **概率来源** | 模型输出 | **历史条件频率 + 台账校准**；模型未通过检验就不用 |
 | **仓位** | 满仓 / 固定比例 | **凯利公式 + 2~3 只分散**，单笔 ≤33% |
 | **验证** | 回测截图 | 外部真值比对（md5 / 远端 clone / 独立双源） |
@@ -113,7 +113,7 @@ python scripts/run.py health --quick   # 接口连通性
 | 方式 | 入口 | 适用 |
 |---|---|---|
 | 克隆仓库 | `git clone https://github.com/Y5H1ggs/niuma-stock-screener.git` | 要全部源码、测试与开发脚本 |
-| **下载云端包** | [`niuma-cloud-v1.2.56.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.56/niuma-cloud-v1.2.56.zip)（0.43 MB / 50 条目） | 直接上架 Skill。含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
+| **下载云端包** | [`niuma-cloud-v1.2.57.zip`](https://github.com/Y5H1ggs/niuma-stock-screener/releases/download/v1.2.57/niuma-cloud-v1.2.57.zip)（0.45 MB / 58 条目） | 直接上架 Skill。含 `scripts` + `references` + `tests` + `README_CLOUD.md`，**不含**个人参数与交易台账 |
 
 ---
 
@@ -335,7 +335,7 @@ python scripts/run.py prob --help
 
 ### 读文档的正确顺序
 
-**不要整篇读 `pitfalls.md`**（约 190 KB）。按这个顺序：
+**不要整篇读 `references/pitfalls.md`**（约 195 KB）。按这个顺序：
 
 1. `references/pitfalls_index.md` —— 8.6% 体积的速查表，先找症状
 2. 命中编号后 `grep -A 40 "^## P115" references/pitfalls.md` 只取一节
@@ -346,18 +346,20 @@ python scripts/run.py prob --help
 
 ## 版本与更新
 
-**当前版本 `v1.2.56`**（2026-11-13）· 许可 MIT · 完整沿革见 [`CHANGELOG.md`](CHANGELOG.md)
+**当前版本 `v1.2.57`**（2026-11-13）· 许可 MIT · 完整沿革见 [`CHANGELOG.md`](CHANGELOG.md)
 
 最近几个版本的实质变化：
 
 | 版本 | 核心变化 |
 |---|---|
+| **v1.2.57** | 补三条文档校验（发布包体积/条目、沿革表首行、英文条数）+ 反向测试；新增 P131/P132 |
+| v1.2.56 | 补上基本面：PE/PB 历史分位、杜邦分解、三表勾稽、三维度荐股（`valuation` / `fundamentals` / `recommend`） |
+| v1.2.55 | README 从开发日志重写为项目介绍 + 使用指南；新增架构图、概率对比图等 4 张图 |
 | **v1.2.54** | 脱敏从「手写清单」改为**台账自动反推**（原清单只覆盖 16%）；重写历史提交信息 |
 | v1.2.53 | 修复风控回撤恒为 0（**15% 熔断从上线起从未触发**） |
 | v1.2.52 | 文档审计：同一份 README 里并存三个不同的条数；K 线末根日期是运行时变量 |
 | v1.2.51 | 绿灯幻觉七型 + **出口七问**（交付前强制自检） |
 | v1.2.50 | 降 token：踩坑库索引化（压缩到 9%）+ CHANGELOG 归档 |
-| v1.2.47 | 概率接入板块 β + 多周期 + `secid` 修复（解锁指数分钟线与板块 K 线） |
 
 **更新方式**：`git pull` 后重跑 `run.py test` 与 `docscheck`。
 云端包用户重新下载 zip 覆盖（`config.json` 与 `_journal/` 不受影响）。
