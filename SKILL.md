@@ -4,7 +4,7 @@ display_name: 选股分析牛马工具
 display_name_en: A-Share Research Workbench
 description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、107 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
 description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
-version: 1.2.49
+version: 1.2.50
 license: MIT
 agent_created: true
 ---
@@ -33,6 +33,32 @@ agent_created: true
 > 研究流程可复用，alpha 全在**风控纪律、板块资金接力判定与回测口径的干净程度**。
 
 ---
+
+## ★★ 读文件策略（v1.2.50，直接决定 token 消耗）
+
+> 本 skill 的 `references/pitfalls.md` 已到 **88 KB / 2760 行 / 118 条**，
+> `CHANGELOG_archive.md` 有 **68 KB**。**整篇读进来一次，抵得上十次正常任务。**
+
+| 场景 | 读什么 | 体积 |
+|---|---|---|
+| 排查某个已知症状 | **`references/pitfalls_index.md`**（速查表） | **8 KB** |
+| 需要某条细节 | `grep -A 40 "^## P115" references/pitfalls.md` 只取一节 | ~2 KB |
+| 看最近改了什么 | `CHANGELOG.md`（只保留最近 6 版） | 12 KB |
+| 历史版本 | `CHANGELOG_archive.md`（**默认不读**） | 68 KB |
+| 接口与量纲 | `references/datasources.md` | 12 KB |
+| 判读铁律 | `references/playbook.md` | 15 KB |
+
+**四条硬规则**：
+
+1. **禁止整篇读 `pitfalls.md`**。先查 `pitfalls_index.md` 的症状列，命中编号再 grep 单节。
+2. **索引是自动生成的**（`python scripts/make_index.py`），**不要手改**——手写必然与正文脱节（P115 的教训：写两遍必错一遍）。
+   新增条目后跑一次，`--check` 可校验同步。
+3. **`CHANGELOG_archive.md` 只在追查历史决策时读**，日常不看。
+4. **任务只需要「能跑」时，不要顺手 load `report.py`（2241 行）/ `factors.py`（1009 行）**——
+   先看 `run.py <子命令>` 能不能直接满足。
+
+**为什么要写这条**：这些文件是**逐次累积**长大的，没有一次是「突然变大」，
+所以每次都觉得「还好」，直到某次任务被 token 成本卡住。**收益是复利的，成本也是。**
 
 ## 自升级与校准协议（元规则 · 优先级最高）
 

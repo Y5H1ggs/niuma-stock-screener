@@ -39,6 +39,7 @@ COMMANDS = {
     'risk': 'risk.py', 'journal': 'journal.py', 'calibrate': 'calibrate.py',
     'winrate': 'winrate_select.py', 'patterns': 'patterns.py', 'fees': 'fees.py',
     'pit': 'pit.py',
+    'makeindex': 'make_index.py',
     # 概率 / 产物验收
     'prob': 'prob.py', 'checkhtml': 'check_html.py',
     # 因子 / 模型 / 辅助
@@ -50,7 +51,7 @@ COMMANDS = {
 
 REQUIRED_FILES = ['ds.py', 'cfg.py', 'report.py', 'winrate_select.py',
                   'smoketest.py', 'health.py', 'ds_ths.py', '_ths_worker.py',
-                  'prob.py', 'check_html.py']
+                  'prob.py', 'check_html.py', 'make_index.py']
 
 
 def doctor():
