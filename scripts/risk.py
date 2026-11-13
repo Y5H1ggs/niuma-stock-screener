@@ -18,7 +18,7 @@
 用法：
   python risk.py check 601169                 # 是否允许开仓 + 建议仓位
   python risk.py status                       # 当前账户风控状态
-  python risk.py plan 601169 --cash 6390.74   # 指定可用资金做仓位规划
+  python risk.py plan 600000 --cash 10000     # 指定可用资金做仓位规划
 """
 import os
 import sys

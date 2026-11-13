@@ -3,7 +3,7 @@
 
 用法：
     python journal.py add --code 600000 --name 示例标的 --price 10.00 --shares 500 --signal manual
-    python journal.py close --id 20260922-601169 --price 11.50 --reason target
+    python journal.py close --id <trade_id> --price 10.00 --reason target
     python journal.py list [--open]
     python journal.py status
     python journal.py verify                 # 尝试用最新行情结算到期预测
@@ -222,7 +222,7 @@ def _sync_account_from_trades():
     ★ v1.2.22 修：旧实现的注释写着"卖出后把卖出净得加回现金"，
       但**代码里只有 `peak_equity` 的更新，`cash` 从来没被改过** ——
       意味着**平仓后钱永远不回到账上**，此后所有"可买股数 / 费用测算 / 资金占用"
-      都基于一个偏低的假现金（本次实测：平掉 4,192.86 元后 cash 仍是 982.78）。
+      都基于一个偏低的假现金（本次实测：平仓后 cash 完全没有变化）。
 
     ★ 为什么用 `synced_trades` 而不是重算全量：
       历史 5 笔的 `cash` 是**人工维护**的基线，重算会覆盖掉用户真实出入金记录。

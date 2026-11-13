@@ -81,3 +81,9 @@ dist/
 # ★ v1.2.47：本地开发临时脚本归档（只在本机，不进仓库）
 # 67 个 _*.py / 15 个 _*.json / 33 个根目录中间产物已移入此处，备份可查
 _dev_archive/
+
+# ★ v1.2.54：禁词表的任何变体（.bak/.old/~/.swp）都不得入库
+#   实测：_*.txt 规则挡不住 _privacy_terms.txt.bak —— 后缀一变就绕过了
+_privacy_terms*
+*.bak
+*.orig

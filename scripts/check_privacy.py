@@ -10,6 +10,8 @@
      本脚本只负责"读取禁词 → 扫描 → 拦截"。
 
 `_privacy_terms.txt` 格式：一行一个禁词，`#` 开头为注释，空行忽略。
+**该文件由 `scripts/make_privacy_terms.py` 从 `_journal/` 自动反推生成**（P126）——
+台账每次更新后必须重跑，否则清单会重新变成残缺状态。
 
 用法：
     python scripts/check_privacy.py              # 扫描暂存区（pre-commit 钩子用）
@@ -59,8 +61,67 @@ def tracked_files():
     return [f for f in (r.stdout or '').splitlines() if f.strip()]
 
 
+# 价格类禁词要求「附近有这些账户语义词」才算命中（见 make_privacy_terms.py）
+# 只保留**强账户语义**词。刻意剔除「资金」「价格」「价位」——
+#   因子表里有「turn_ratio|资金」这种维度名，窗口一放宽就把 IC 值 `+9.99`
+#   误判成买入价（实测假阳性）。**假阳性会诱导 --no-verify，闸门反而失效。**
+CTX_WORDS = ('元', '股', '成本', '买入', '卖出', '买价', '卖价', '成交',
+             '止损', '止盈', '平仓', '建仓', '持仓', '仓位', '回本', '保本', '权益')
+CTX_WINDOW = 25
+
+
+def _hit_ctx(term, txt):
+    """价格类禁词：只有当 term 附近出现账户语义词时才算命中"""
+    import re as _re
+    base = _hit(term, txt)
+    if not base:
+        return False
+    for m in _re.finditer(r'(?<![\d.,])' + _re.escape(term) + r'(?![\d,])', txt) \
+            if _re.fullmatch(r'-?\d[\d,]*\.?\d*', term) else []:
+        seg = txt[max(0, m.start() - CTX_WINDOW): m.end() + CTX_WINDOW]
+        if any(w in seg for w in CTX_WORDS):
+            return True
+    if not _re.fullmatch(r'-?\d[\d,]*\.?\d*', term):
+        # 非纯数值形态（如「7.51 元」）：同样按窗口判断
+        i = txt.find(term)
+        if i >= 0:
+            seg = txt[max(0, i - CTX_WINDOW): i + len(term) + CTX_WINDOW]
+            return any(w in seg for w in CTX_WORDS)
+    return False
+
+
+def _hit_any(term, txt):
+    if term.startswith('~ctx~'):
+        return _hit_ctx(term[5:], txt)
+    return _hit(term, txt)
+
+
+def _hit(term, txt):
+    """判断 term 是否真的出现在 txt 里。
+
+    ⚠️ v1.2.54 修（P127，2026-11-13）：旧实现是裸 `term in txt`，
+       于是短 token 会命中更长数字的内部：
+           `N00 股` 会命中 `1N00 股`（短 token 落在更长数字内部）
+           `7.24`   会命中 `7.241`
+       这与 P111 的 `'<thead>'.count('<th')` 是**同一族**错误——
+       **任何「子串判据」，都要先问：我要找的东西，会不会是别的值的前缀/后缀？**
+
+       实测影响：`check_html.py` 里一条**虚构示例**被误判成命中真实股数，
+       差点为了消警去改一条本来正确的示例值——**假阳性会诱导人削弱规则**（--no-verify）。
+    """
+    import re as _re
+    # 纯数值（含千分位、小数）：两侧不得紧邻数字/小数点/逗号
+    if _re.fullmatch(r'-?\d[\d,]*\.?\d*', term):
+        pat = r'(?<![\d.,])' + _re.escape(term) + r'(?![\d,])'
+        return _re.search(pat, txt) is not None
+    # 「N 股」：前侧不得紧邻数字
+    if _re.fullmatch(r'\d[\d,]*\s*股', term):
+        return _re.search(r'(?<!\d)' + _re.escape(term), txt) is not None
+    return term in txt
+
+
 def scan_text(txt, terms, label):
-    return [(label, t, '禁词') for t in terms if t in txt]
+    return [(label, t.replace('~ctx~', ''), '禁词') for t in terms if _hit_any(t, txt)]
 
 
 def main():
@@ -74,6 +135,11 @@ def main():
             tpath = sys.argv[i + 1]
         if a == '--msg' and i + 1 < len(sys.argv):
             msg_file = sys.argv[i + 1]
+
+    dir_mode = None
+    for i, a in enumerate(sys.argv):
+        if a == '--dir' and i + 1 < len(sys.argv):
+            dir_mode = sys.argv[i + 1]
 
     terms = load_terms(tpath)
     if terms is None:
@@ -115,8 +181,8 @@ def main():
                 continue
             sha, body = rec.split('\x1f', 1)
             for t in terms:
-                if t in body:
-                    hits.append((sha[:8], t))
+                if _hit_any(t, body):
+                    hits.append((sha[:8], t.replace('~ctx~', '')))
         if not hits:
             print('  ✅ 历史提交信息未含敏感词')
             return 0
@@ -125,10 +191,50 @@ def main():
             print('     %-10s %s' % (sha, what))
         return 1
 
-    files = tracked_files() if all_mode else staged_files()
+    skipped = 0
+    if dir_mode:
+        # 外部目录模式：不依赖 git，直接遍历
+        import glob as _g
+        files = []
+        base = os.path.abspath(dir_mode)
+        for pat in ('*.md', '*.py', '*.json', '*.svg', '*.txt', '*.cfg', '*.toml'):
+            for f in _g.glob(os.path.join(base, '**', pat), recursive=True):
+                # ⚠️ 先把 Windows 反斜杠统一成正斜杠，**再**做目录判断——
+                #   否则 'C://...//_journal//x.json' 永远匹配不上 '/_journal/'
+                #   （实测踩过：排除规则写了却完全不生效，还以为是规则写错了）
+                fp = f.replace('\\', '/')
+                base_n = os.path.basename(fp)
+                # 跳过「本地数据 / 非发布物」：它们按定义就含真实账户数据，
+                # 扫它们永远命中，而正确的处置是「不让它们进发布包」
+                # （build_package.py 已白名单式排除）
+                if base_n.startswith('_privacy_terms') or base_n in ('config.json', 'account.json'):
+                    skipped += 1
+                    continue
+                if any(d in fp for d in ('/__pycache__/', '/_dev_archive/',
+                                         '/_journal/', '/dist/', '/.git/', '/node_modules/')):
+                    skipped += 1
+                    continue
+                files.append(fp)
+        print('  外部目录模式：%s（跳过 %d 个本地数据/非发布物）' % (base, skipped))
+    elif all_mode:
+        files = tracked_files()
+    else:
+        files = staged_files()
     files = [f for f in files if not f.lower().endswith(SKIP_EXT)]
     print('  扫描 %d 个文件（%s）+ %d 条禁词' % (
         len(files), '工作区全部' if all_mode else '暂存区', len(terms)))
+
+    # ★★ v1.2.54：扫了 0 个文件 ≠ 干净（P126 的同族，实测踩到）
+    #   在**非 git 目录**（如安装后的 skill 目录）跑本脚本时，`git ls-files` 返回空
+    #   → 一个文件都没扫 → 却打印「✅ 未发现敏感内容」。
+    #   这和「清单只覆盖 16%」是同一类错：**闸门跑了，但没在检查东西。**
+    #   宁可报失败，也不许给出一个空检查的绿灯。
+    if not files:
+        print()
+        print('  ❌ 扫描了 0 个文件 —— 这个结果**不构成通过**')
+        print('     常见原因：当前目录不是 git 仓库（安装后的 skill 目录就是如此）。')
+        print('     请在本仓库根目录运行，或用 --dir 指定待扫目录。')
+        return 1
 
     hits = []
     import re
@@ -141,8 +247,8 @@ def main():
         except Exception:
             continue
         for t in terms:
-            if t in txt:
-                hits.append((f, t, '禁词'))
+            if _hit_any(t, txt):
+                hits.append((f, t.replace('~ctx~', ''), '禁词'))
         for pat, why in STRUCT:
             for m in re.finditer(pat, txt):
                 hits.append((f, m.group(0)[:40], why))

@@ -2,9 +2,9 @@
 name: 选股分析牛马工具
 display_name: 选股分析牛马工具
 display_name_en: A-Share Research Workbench
-description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、123 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
+description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、125 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
 description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
-version: 1.2.53
+version: 1.2.54
 license: MIT
 agent_created: true
 ---
@@ -95,7 +95,7 @@ r['warn']       # 与 include_today 不符时的说明（不为 None 就必须�
 
 ## ★★ 读文件策略（v1.2.50，直接决定 token 消耗）
 
-> 本 skill 的 `references/pitfalls.md` 已到 **95 KB / 3249 行 / 123 条**，
+> 本 skill 的 `references/pitfalls.md` 已到 **98 KB / 3362 行 / 125 条**，
 > `CHANGELOG_archive.md` 有 **68 KB**。**整篇读进来一次，抵得上十次正常任务。**
 
 | 场景 | 读什么 | 体积 |
@@ -130,7 +130,7 @@ r['warn']       # 与 include_today 不符时的说明（不为 None 就必须�
 | 步 | 动作 | 命令 |
 |---|---|---|
 | ① | 实盘发生 → **先记事实，别急着解释** | `python scripts/journal.py add --code 600000 --name 示例标的 --price 10.00 --shares 500` |
-| ② | 平仓 → 记录卖出价与**卖出原因** | `python scripts/journal.py close --id 20260922-601169 --price 11.50 --reason take_profit` |
+| ② | 平仓 → 记录卖出价与**卖出原因** | `python scripts/journal.py close --id <trade_id> --price 10.00 --reason take_profit` |
 | ③ | 给出概率预测 → **落台账**（不落台账永远无法校准） | `predict.py` 输出 → `journal.record_forecast(...)` |
 | ④ | 每 5 个交易日 / 每周末 → 出校准报告 | `python scripts/calibrate.py all` |
 | ⑤ | 读门槛 → 判断证据强度够不够改参数 | 见 `calibration.md` §二 |
@@ -470,7 +470,7 @@ f* = (p×b − q) / b = 0.163  →  全凯利 16.3%
   **只作低频补充**（出报告时查一次），**不要放进循环**。
 - **★ 股本结构（v1.2.18 新增）**：东财 datacenter `RPT_F10_EH_EQUITY` → `ds.equity_struct(code)`。
   **带 `NOTICE_DATE`（公告日，天然 PIT）**；用于算**真实换手率** `ds.turnover_rate(code, vol_hand)`。
-  与新浪资金流反推值**已交叉验证一致**（000973 同日 3.269% vs 3.240%）。
+  与新浪资金流反推值**已交叉验证一致**（600000 同日 3.269% vs 3.240%）。
 - **★ 三大报表（v1.2.18 新增）**：东财 datacenter `RPT_DMSK_FN_{BALANCE,INCOME,CASHFLOW}` →
   `ds.fin_statements(code)`：资产负债率 / 流动比率 / 扣非净利 / 经营现金流，**每表各有 `NOTICE_DATE`**。
 - ❌ **实测淘汰、别再试**：雪球（缺 `xq_a_token` → 稳定 400）、同花顺 quantapi / iFinD（**付费**）、
@@ -522,7 +522,7 @@ f* = (p×b − q) / b = 0.163  →  全凯利 16.3%
 ### 次日概率预测（`predict.py`）
 
 ```bash
-python predict.py 601169                 # 次日开/收/盘中三口径概率分布
+python predict.py 600000                 # 次日开/收/盘中三口径概率分布
 python predict.py 600000 --cost 10.00      # --cost 传建仓成本（此处为示例值）
 ```
 

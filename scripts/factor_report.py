@@ -11,7 +11,7 @@
    用在单票上只能说明"该票在该维度上处于自己历史的什么位置"，**不构成买卖建议**。
 
 用法：
-    python factor_report.py 000973          # 打印文本版
+    python factor_report.py 600000          # 打印文本版
     from factor_report import snapshot, html_block
 """
 import io, os, sys, time
@@ -324,5 +324,5 @@ def text_report(code):
 
 if __name__ == '__main__':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    code = sys.argv[1] if len(sys.argv) > 1 else '000973'
+    code = sys.argv[1] if len(sys.argv) > 1 else '600000'
     print(text_report(code))
