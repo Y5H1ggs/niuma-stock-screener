@@ -1492,6 +1492,51 @@ def board_flow_dc(kind='concept', date=None, pz=600):
     return out
 
 
+def kline_asof(code, n=260, include_today=None):
+    """拉 K 线，并**显式告知末根是哪一天**。算均线/位置必须用它，不要直接用 `kline_list`。
+
+    ⚠️ 为什么必须有（P122，2026-11-13 实测）：
+      东财日 K 在**盘中某个时点**会从「不含当日」切换成「含当日」——
+      同一只票、同一个 `n`、相隔 **2 分钟**：
+
+          14:38  kline_list('002249', 60)  ->  末根 2026-11-12 收 7.66
+          14:40  kline_list('002249', 60)  ->  末根 2026-11-13 收 7.19
+
+      **它不报错、不告警、K 线根数完全一样（都是 60 根）。**
+      而「末根含不含今日」直接决定 MA5 是 7.71 还是别的值——
+      **同一段算均线的代码，两分钟后跑出不同结论。**
+
+      更早的教训（P7）只记了「新浪末根是前一交易日」，
+      但真正的坑是：**末根日期是运行时变量，不是接口常量**。
+
+    参数：
+      include_today: True=要求末根必须是今日；False=要求剔除今日（返回昨收口径）；
+                     None=不强制，只把事实放在返回值里。
+    返回 dict：
+      bars        —— 按 include_today 处理后的序列（None 时原样返回）
+      raw_last    —— 接口原始末根的日期
+      has_today   —— 原始末根是否等于今天
+      ohlc_ready  —— 是否可用于当日盘中判断（= has_today）
+      warn        —— 与 include_today 不符时的说明；否则 None
+    """
+    import datetime as _dt
+    bars = kline_list(code, n)
+    today = _dt.date.today().isoformat()
+    raw_last = bars[-1]['d'][:10] if bars else None
+    has_today = (raw_last == today)
+
+    out = {'bars': bars, 'raw_last': raw_last, 'has_today': has_today,
+           'ohlc_ready': has_today, 'warn': None}
+
+    if include_today is True and not has_today:
+        out['warn'] = ('要求含今日但末根是 %s —— 该源此刻尚未并入当日，'
+                       '均线只能算到昨收口径，不得当「含今日」使用' % raw_last)
+    elif include_today is False and has_today:
+        out['bars'] = bars[:-1]
+        out['warn'] = ('要求剔除今日，已自动去掉末根 %s（收 %s）' % (raw_last, bars[-1]['c']))
+    return out
+
+
 def board_kline(bk, n=260, klt=101, fqt=1, use_cache=True):
     """板块**历史 K 线**。返回 `[{d,o,c,h,l,v}]`，失败一律 `[]`（不返回 None）。
 

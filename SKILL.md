@@ -2,9 +2,9 @@
 name: 选股分析牛马工具
 display_name: 选股分析牛马工具
 display_name_en: A-Share Research Workbench
-description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、107 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
+description: A股个人研究复盘与量化胜率分析工具。首次使用先做基础数据录入 → 全市场扫描 → 板块内资金接力对比 → 形态回测 → 量化胜率与凯利仓位 → 概率标注 → 一键生成卡片式 HTML 深度分析报告。当用户要求选股推演、明日情景概率、板块横向对比、个股五段式分析（基本面/资金面/技术面）、生成个股分析报告时使用。内置多源降级链、120 条踩坑记录、四层自检与隐私闸门；资金规模与交易权限由 config.json 定义，不含任何预设个人参数。只给概率与客观推演，不给买卖指令，末尾强制风险提示。
 description_en: A personal A-share research and quantitative win-rate toolkit. Covers universe scanning, sector fund-rotation comparison, pattern backtesting, Kelly position sizing, probability-tagged scenarios and one-command card-style HTML reports. Includes multi-source fallback chains, 107 documented pitfalls, four-layer self-checks and privacy gates. Personal capital and trading permissions come from config.json, never hardcoded. Provides probabilities and objective reasoning only — no buy/sell instructions, with a mandatory risk disclaimer.
-version: 1.2.51
+version: 1.2.52
 license: MIT
 agent_created: true
 ---
@@ -33,6 +33,36 @@ agent_created: true
 > 研究流程可复用，alpha 全在**风控纪律、板块资金接力判定与回测口径的干净程度**。
 
 ---
+
+## ★★ K 线口径：末根日期必须每次确认（P122，v1.2.52）
+
+**日 K 线末根是哪一天，是运行时变量，不是接口常量。**
+
+实测（2026-11-13，同一只票、同一 `n=60`）：
+
+```
+14:38  末根 2026-11-12   14:40  末根 2026-11-13   14:44  末根 2026-11-12
+根数都是 60、不报错、不告警
+```
+
+含不含今日，MA5 差 0.03 以上——**足以改变「是否失守」的判定**。
+
+**硬规则**：
+
+```python
+# ❌ 禁用
+bars = ds.kline_list(code, 260)
+
+# ✅ 算均线/位置一律用
+r = ds.kline_asof(code, 260, include_today=False)   # 昨收口径，已自动剔除今日
+r = ds.kline_asof(code, 260, include_today=True)    # 含今日
+r['raw_last']   # 接口真实末根
+r['has_today']  # 是否含今日
+r['warn']       # 与 include_today 不符时的说明（不为 None 就必须在报告里标注）
+```
+
+`r['warn']` 不为空时，**报告必须写明「本报告均线为昨收口径」或「含今日口径」**，
+不许含糊成「均线 MA5 = xxx」。
 
 ## ★★★ 出口七问（v1.2.51，交付前强制自检）
 
@@ -65,7 +95,7 @@ agent_created: true
 
 ## ★★ 读文件策略（v1.2.50，直接决定 token 消耗）
 
-> 本 skill 的 `references/pitfalls.md` 已到 **88 KB / 2760 行 / 118 条**，
+> 本 skill 的 `references/pitfalls.md` 已到 **93 KB / 3111 行 / 120 条**，
 > `CHANGELOG_archive.md` 有 **68 KB**。**整篇读进来一次，抵得上十次正常任务。**
 
 | 场景 | 读什么 | 体积 |
